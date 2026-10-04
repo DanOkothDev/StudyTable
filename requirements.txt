@@ -6,6 +6,5 @@ flask-migrate
 flask-sqlalchemy
 google-genai
 psycopg2-binary
-pypdf
+pypdfium2
 python-dotenv
-requests

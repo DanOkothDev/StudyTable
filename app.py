@@ -13,7 +13,7 @@ from flask_login import (LoginManager, UserMixin, current_user,
                          login_required, login_user, logout_user)
 from flask_migrate import Migrate
 from flask_sqlalchemy import SQLAlchemy
-from pypdf import PdfReader
+import pypdfium2 as pdfium
 from sqlalchemy import func
 from werkzeug.security import check_password_hash, generate_password_hash
 
@@ -49,6 +49,23 @@ CAT_MAX_PAGES = 15                                           # pages sampled for
 CAT_PAGE_CHARS = 2000
 BOX_INTERVAL_DAYS = {1: 0, 2: 1, 3: 3, 4: 7, 5: 14}          # Leitner boxes: days until a card returns
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def extract_pages(path):
+    """Text of every page. pdfium is far faster than pypdf on real-world PDFs."""
+    pdf = pdfium.PdfDocument(str(path))
+    try:
+        texts = []
+        for i in range(len(pdf)):
+            page = pdf[i]
+            textpage = page.get_textpage()
+            # Postgres refuses NUL characters in text, so strip them
+            texts.append(textpage.get_text_range().replace("\x00", "").strip())
+            textpage.close()
+            page.close()
+        return texts
+    finally:
+        pdf.close()
 
 
 def utcnow():
@@ -364,8 +381,7 @@ def upload_document(course_id):
     path = UPLOAD_DIR / stored_name
     file.save(path)
     try:
-        reader = PdfReader(path)
-        texts = [(p.extract_text() or "").strip() for p in reader.pages]
+        texts = extract_pages(path)
     except Exception:
         path.unlink(missing_ok=True)
         return jsonify(error="could not read that PDF"), 400
