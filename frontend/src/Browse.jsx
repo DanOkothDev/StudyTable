@@ -3,6 +3,26 @@ import { api } from './api';
 
 const TINTS = ['#FFD3BF', '#CFDCFF', '#CDEFD9', '#F9D5E8', '#FFEBA3', '#DCD2FA'];
 const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+const yearsCache = { promise: null, data: null };
+const semesterCache = new Map();
+
+async function loadYears() {
+  if (yearsCache.data) return yearsCache.data;
+  if (!yearsCache.promise) {
+    yearsCache.promise = api.years().then((items) => {
+      yearsCache.data = items;
+      return items;
+    });
+  }
+  return yearsCache.promise;
+}
+
+async function loadSemester(id) {
+  if (semesterCache.has(id)) return semesterCache.get(id);
+  const promise = api.semester(id);
+  semesterCache.set(id, promise);
+  return promise;
+}
 
 function Grid({ items, onOpen, add }) {
   return (
@@ -29,7 +49,9 @@ export function Years({ onOpen }) {
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState('');
 
-  useEffect(() => { api.years().then(setYears).catch((e) => setError(e.message)); }, []);
+  useEffect(() => {
+    loadYears().then(setYears).catch((e) => setError(e.message));
+  }, []);
 
   const hour = new Date().getHours();
   const hello = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
@@ -38,7 +60,10 @@ export function Years({ onOpen }) {
   async function add(n) {
     try {
       const y = await api.createYear(n);
-      setYears([...years, y].sort((a, b) => a.number - b.number));
+      const next = [...(years || []), y].sort((a, b) => a.number - b.number);
+      yearsCache.data = next;
+      yearsCache.promise = Promise.resolve(next);
+      setYears(next);
       setAdding(false); setError('');
     } catch (e) { setError(e.message); }
   }
@@ -68,7 +93,9 @@ export function Years({ onOpen }) {
 
 export function YearView({ year, onOpen }) {
   const [y, setY] = useState(null);
-  useEffect(() => { api.years().then((ys) => setY(ys.find((x) => x.id === year.id) || null)); }, [year.id]);
+  useEffect(() => {
+    loadYears().then((ys) => setY(ys.find((x) => x.id === year.id) || null));
+  }, [year.id]);
   return (
     <>
       <h1>Year {year.number}</h1>
@@ -107,7 +134,9 @@ function NewUnit({ onCreate, i }) {
 
 export function SemesterView({ sem, onOpen }) {
   const [units, setUnits] = useState(null);
-  useEffect(() => { api.semester(sem.id).then((s) => setUnits(s.courses)); }, [sem.id]);
+  useEffect(() => {
+    loadSemester(sem.id).then((s) => setUnits(s.courses));
+  }, [sem.id]);
   return (
     <>
       <h1>Semester {sem.number}</h1>

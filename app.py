@@ -1,6 +1,9 @@
 import os
 import re
+import threading
+import time
 import uuid
+from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -43,12 +46,17 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 
 STUDIED_AFTER_SECONDS = 10                                   # total seconds on a page to count as studied
 DAILY_AI_LIMIT = int(os.environ.get("DAILY_AI_LIMIT", "20"))  # Gemini calls per user per day
+AI_BURST_LIMIT = int(os.environ.get("AI_BURST_LIMIT", "2"))
+AI_BURST_WINDOW_SECONDS = int(os.environ.get("AI_BURST_WINDOW_SECONDS", "10"))
 MAX_PAGES_PER_BATCH = 8                                      # pages sent to Gemini per "make cards" click
 PAGE_CHAR_LIMIT = 3000                                       # text per page sent to Gemini
 CAT_MAX_PAGES = 15                                           # pages sampled for one CAT
 CAT_PAGE_CHARS = 2000
 BOX_INTERVAL_DAYS = {1: 0, 2: 1, 3: 3, 4: 7, 5: 14}          # Leitner boxes: days until a card returns
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+AI_CALL_LOCK = threading.Lock()
+AI_BURST_TIMES = defaultdict(deque)
+AI_BURST_LOCK = threading.Lock()
 
 
 def extract_pages(path):
@@ -79,6 +87,7 @@ class User(UserMixin, db.Model):
     email = db.Column(db.String(255), unique=True, nullable=False)
     password_hash = db.Column(db.String(255), nullable=False)
     courses = db.relationship("Course", backref="user", cascade="all, delete-orphan")
+    __table_args__ = (db.Index("ix_user_email", "email"),)
 
 
 class Year(db.Model):
@@ -87,7 +96,8 @@ class Year(db.Model):
     number = db.Column(db.Integer, nullable=False)              # 1 = Year 1
     semesters = db.relationship("Semester", backref="year", cascade="all, delete-orphan",
                                 order_by="Semester.number")
-    __table_args__ = (db.UniqueConstraint("user_id", "number"),)
+    __table_args__ = (db.UniqueConstraint("user_id", "number"),
+                      db.Index("ix_year_user_number", "user_id", "number"))
 
 
 class Semester(db.Model):
@@ -95,7 +105,8 @@ class Semester(db.Model):
     year_id = db.Column(db.Integer, db.ForeignKey("year.id"), nullable=False)
     number = db.Column(db.Integer, nullable=False)              # 1 or 2
     courses = db.relationship("Course", backref="semester")     # a unit is a Course
-    __table_args__ = (db.UniqueConstraint("year_id", "number"),)
+    __table_args__ = (db.UniqueConstraint("year_id", "number"),
+                      db.Index("ix_semester_year_number", "year_id", "number"))
 
 
 class Course(db.Model):
@@ -105,7 +116,9 @@ class Course(db.Model):
     name = db.Column(db.String(120), nullable=False)
     documents = db.relationship("Document", backref="course", cascade="all, delete-orphan")
     cats = db.relationship("Cat", backref="course", cascade="all, delete-orphan")
-    __table_args__ = (db.UniqueConstraint("user_id", "name"),)
+    __table_args__ = (db.UniqueConstraint("user_id", "name"),
+                      db.Index("ix_course_user_name", "user_id", "name"),
+                      db.Index("ix_course_user_semester", "user_id", "semester_id"))
 
 
 class Document(db.Model):
@@ -116,6 +129,7 @@ class Document(db.Model):
     page_count = db.Column(db.Integer, nullable=False)
     pages = db.relationship("Page", backref="document", cascade="all, delete-orphan")
     flashcards = db.relationship("Flashcard", backref="document", cascade="all, delete-orphan")
+    __table_args__ = (db.Index("ix_document_course_id", "course_id"),)
 
 
 class Page(db.Model):
@@ -126,7 +140,11 @@ class Page(db.Model):
     seconds_spent = db.Column(db.Integer, nullable=False, default=0)
     studied = db.Column(db.Boolean, nullable=False, default=False)
     cards_made = db.Column(db.Boolean, nullable=False, default=False)
-    __table_args__ = (db.UniqueConstraint("document_id", "page_number"),)
+    __table_args__ = (db.UniqueConstraint("document_id", "page_number"),
+                      db.Index("ix_page_document_page", "document_id", "page_number"),
+                      db.Index("ix_page_study_cards", "document_id", "studied", "cards_made"),
+                      db.Index("ix_page_document_studied", "document_id", "studied"),
+                      db.Index("ix_page_document_cards_made", "document_id", "cards_made"))
 
 
 class Flashcard(db.Model):
@@ -139,6 +157,9 @@ class Flashcard(db.Model):
     times_right = db.Column(db.Integer, nullable=False, default=0)
     times_wrong = db.Column(db.Integer, nullable=False, default=0)
     due_at = db.Column(db.DateTime, nullable=False, default=utcnow)
+    __table_args__ = (db.Index("ix_flashcard_document_page", "document_id", "page_number"),
+                      db.Index("ix_flashcard_due_at", "due_at"),
+                      db.Index("ix_flashcard_document_due", "document_id", "due_at"))
 
 
 class AiUsage(db.Model):
@@ -147,7 +168,8 @@ class AiUsage(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
     day = db.Column(db.Date, nullable=False)
     count = db.Column(db.Integer, nullable=False, default=0)
-    __table_args__ = (db.UniqueConstraint("user_id", "day"),)
+    __table_args__ = (db.UniqueConstraint("user_id", "day"),
+                      db.Index("ix_ai_usage_user_day", "user_id", "day"))
 
 
 class Cat(db.Model):
@@ -159,6 +181,7 @@ class Cat(db.Model):
     score = db.Column(db.Integer, nullable=True)                    # number correct
     questions = db.relationship("CatQuestion", backref="cat", cascade="all, delete-orphan",
                                 order_by="CatQuestion.position")
+    __table_args__ = (db.Index("ix_cat_course_created", "course_id", "created_at"),)
 
 
 class CatQuestion(db.Model):
@@ -170,6 +193,7 @@ class CatQuestion(db.Model):
     correct_index = db.Column(db.Integer, nullable=False)
     explanation = db.Column(db.Text, nullable=False, default="")
     chosen_index = db.Column(db.Integer, nullable=True)
+    __table_args__ = (db.Index("ix_cat_question_cat_position", "cat_id", "position"),)
 
 
 # ---------- Login plumbing and errors ----------
@@ -267,12 +291,25 @@ def ai_calls_today():
     return row.count if row else 0
 
 
+def ai_burst_block():
+    """Protect against rapid bursts of AI requests from a single user."""
+    now = time.monotonic()
+    with AI_BURST_LOCK:
+        bucket = AI_BURST_TIMES[current_user.id]
+        while bucket and bucket[0] <= now - AI_BURST_WINDOW_SECONDS:
+            bucket.popleft()
+        if len(bucket) >= AI_BURST_LIMIT:
+            return jsonify(error="Too many AI requests right now. Please wait a moment."), 429
+        bucket.append(now)
+    return None
+
+
 def quota_block():
     """Returns an error response if the user is out of AI calls today, else None."""
     if ai_calls_today() >= DAILY_AI_LIMIT:
         return jsonify(error=f"You've used your {DAILY_AI_LIMIT} AI requests for today. "
                              "They reset at midnight UTC."), 429
-    return None
+    return ai_burst_block()
 
 
 def record_ai_call():
@@ -292,8 +329,26 @@ def ai_usage():
 
 # ---------- JSON helpers ----------
 
-def doc_json(d):
-    scanned = Page.query.filter_by(document_id=d.id, text="").count()   # pages with no readable text
+def course_document_counts(course_ids):
+    if not course_ids:
+        return {}
+    rows = (db.session.query(Document.course_id, func.count(Document.id).label("count"))
+            .filter(Document.course_id.in_(course_ids))
+            .group_by(Document.course_id).all())
+    return {course_id: count for course_id, count in rows}
+
+
+def empty_page_counts(document_ids):
+    if not document_ids:
+        return {}
+    rows = (db.session.query(Page.document_id, func.count(Page.id).label("count"))
+            .filter(Page.document_id.in_(document_ids), Page.text == "")
+            .group_by(Page.document_id).all())
+    return {document_id: count for document_id, count in rows}
+
+
+def doc_json(d, empty_pages=None):
+    scanned = empty_pages if empty_pages is not None else Page.query.filter_by(document_id=d.id, text="").count()
     return {"id": d.id, "course_id": d.course_id, "filename": d.filename,
             "page_count": d.page_count, "empty_pages": scanned}
 
@@ -380,8 +435,9 @@ def me():
 @app.get("/api/courses")
 @login_required
 def list_courses():
-    courses = Course.query.filter_by(user_id=current_user.id).order_by(Course.name)
-    return jsonify([{"id": c.id, "name": c.name, "document_count": len(c.documents)} for c in courses])
+    courses = Course.query.filter_by(user_id=current_user.id).order_by(Course.name).all()
+    counts = course_document_counts([c.id for c in courses])
+    return jsonify([{"id": c.id, "name": c.name, "document_count": counts.get(c.id, 0)} for c in courses])
 
 
 @app.get("/api/years")
@@ -469,7 +525,8 @@ def delete_course(course_id):
 @login_required
 def list_documents(course_id):
     course = owned_course_or_404(course_id)
-    return jsonify([doc_json(d) for d in course.documents])
+    empty_counts = empty_page_counts([d.id for d in course.documents])
+    return jsonify([doc_json(d, empty_counts.get(d.id, 0)) for d in course.documents])
 
 
 @app.post("/api/courses/<int:course_id>/documents")
@@ -613,9 +670,9 @@ def list_flashcards(course_id):
 def due_flashcards(course_id):
     owned_course_or_404(course_id)
     limit = min(max(request.args.get("limit", 20, type=int), 1), 100)
-    cards = (course_cards_query(course_id).filter(Flashcard.due_at <= utcnow())
-             .order_by(Flashcard.due_at).limit(limit).all())
-    total_due = course_cards_query(course_id).filter(Flashcard.due_at <= utcnow()).count()
+    base_query = course_cards_query(course_id).filter(Flashcard.due_at <= utcnow())
+    cards = base_query.order_by(Flashcard.due_at).limit(limit).all()
+    total_due = base_query.count()
     return jsonify(total_due=total_due, cards=[card_json(c) for c in cards])
 
 

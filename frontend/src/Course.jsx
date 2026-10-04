@@ -65,7 +65,12 @@ export default function Course({
     const pdfs = [...files].filter((f) =>
       f.name.toLowerCase().endsWith(".pdf"),
     );
-    for (const file of pdfs) {
+    const workers = 2;
+    let index = 0;
+
+    const runNext = async () => {
+      if (index >= pdfs.length) return;
+      const file = pdfs[index++];
       const key = crypto.randomUUID();
       setQueue((q) => [...q, { key, name: file.name }]);
       try {
@@ -77,7 +82,10 @@ export default function Course({
           q.map((x) => (x.key === key ? { ...x, error: err.message } : x)),
         );
       }
-    }
+      await runNext();
+    };
+
+    await Promise.all(Array.from({ length: Math.min(workers, pdfs.length) }, runNext));
   }
 
   if (catId) return <CatRun id={catId} onBack={() => setCatId(null)} />;

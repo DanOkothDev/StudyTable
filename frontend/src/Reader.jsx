@@ -16,6 +16,7 @@ export default function Reader({ course, doc, onBack }) {
   const wrap = useRef(null);
   const canvas = useRef(null);
   const start = useRef(Date.now());
+  const renderCache = useRef(new Map());
 
   useEffect(() => {
     const task = pdfjs.getDocument({
@@ -30,12 +31,25 @@ export default function Reader({ course, doc, onBack }) {
     if (!pdf) return;
     let job,
       dead = false;
+    const cached = renderCache.current.get(page);
+    if (cached) {
+      const c = canvas.current;
+      if (c) {
+        c.width = cached.width;
+        c.height = cached.height;
+        c.style.width = cached.styleWidth;
+        c.style.height = cached.styleHeight;
+        const ctx = c.getContext("2d");
+        ctx.putImageData(cached.imageData, 0, 0);
+      }
+      return undefined;
+    }
     (async () => {
       const p = await pdf.getPage(page);
       if (dead) return;
       const base = p.getViewport({ scale: 1 });
-      const fit = Math.min(wrap.current.clientWidth / base.width, 1.7);
-      const dpr = window.devicePixelRatio || 1;
+      const fit = Math.min(wrap.current.clientWidth / base.width, 1.3);
+      const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
       const vp = p.getViewport({ scale: fit * dpr });
       const c = canvas.current;
       c.width = vp.width;
@@ -44,6 +58,15 @@ export default function Reader({ course, doc, onBack }) {
       c.style.height = vp.height / dpr + "px";
       job = p.render({ canvasContext: c.getContext("2d"), viewport: vp });
       await job.promise.catch(() => {});
+      if (!dead) {
+        renderCache.current.set(page, {
+          width: vp.width,
+          height: vp.height,
+          styleWidth: vp.width / dpr + "px",
+          styleHeight: vp.height / dpr + "px",
+          imageData: c.getContext("2d").getImageData(0, 0, vp.width, vp.height),
+        });
+      }
     })();
     return () => {
       dead = true;
@@ -83,7 +106,7 @@ export default function Reader({ course, doc, onBack }) {
     };
     window.addEventListener("keydown", key);
     return () => window.removeEventListener("keydown", key);
-  });
+  }, [page]);
 
   useEffect(() => {
     const t = setInterval(
