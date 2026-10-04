@@ -1,19 +1,25 @@
 import os
 import re
 import uuid
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
-from flask_migrate import Migrate
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 from flask_login import (LoginManager, UserMixin, current_user,
                          login_required, login_user, logout_user)
+from flask_migrate import Migrate
 from flask_sqlalchemy import SQLAlchemy
 from pypdf import PdfReader
+from sqlalchemy import func
 from werkzeug.security import check_password_hash, generate_password_hash
 
 load_dotenv()
+
+import ai  # noqa: E402  (after load_dotenv so GEMINI_MODEL is read from .env)
 
 app = Flask(__name__)
 app.config["SQLALCHEMY_DATABASE_URI"] = os.environ["DATABASE_URL"]
@@ -21,21 +27,32 @@ app.config["SECRET_KEY"] = os.environ["SECRET_KEY"]          # signs the login c
 app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024          # 50 MB per upload
 app.config["SESSION_COOKIE_HTTPONLY"] = True                 # JavaScript can't read the cookie
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
-app.config["SESSION_COOKIE_SECURE"] = os.environ.get("COOKIE_SECURE", "0") == "1"  # set to 1 once on https
+app.config["SESSION_COOKIE_SECURE"] = os.environ.get("COOKIE_SECURE", "0") == "1"  # 1 once on https
 
-# CORS (rules for which website may call this API): only your React app, and with cookies
 CORS(app, supports_credentials=True,
      origins=[os.environ.get("FRONTEND_ORIGIN", "http://localhost:5173")])
 
 db = SQLAlchemy(app)
-migrate = Migrate(app, db)   # tracks table changes as versioned migration files
+migrate = Migrate(app, db)
 login_manager = LoginManager(app)
+# Rate limiter: slows down password guessing. Counts are kept in memory (reset on restart).
+limiter = Limiter(get_remote_address, app=app, default_limits=[], storage_uri="memory://")
 
 UPLOAD_DIR = Path(os.environ.get("UPLOAD_DIR", "uploads"))
 UPLOAD_DIR.mkdir(exist_ok=True)
 
-STUDIED_AFTER_SECONDS = 10   # total seconds on a page before it counts as "studied"
+STUDIED_AFTER_SECONDS = 10                                   # total seconds on a page to count as studied
+DAILY_AI_LIMIT = int(os.environ.get("DAILY_AI_LIMIT", "20"))  # Gemini calls per user per day
+MAX_PAGES_PER_BATCH = 8                                      # pages sent to Gemini per "make cards" click
+PAGE_CHAR_LIMIT = 3000                                       # text per page sent to Gemini
+CAT_MAX_PAGES = 15                                           # pages sampled for one CAT
+CAT_PAGE_CHARS = 2000
+BOX_INTERVAL_DAYS = {1: 0, 2: 1, 3: 3, 4: 7, 5: 14}          # Leitner boxes: days until a card returns
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def utcnow():
+    return datetime.utcnow()
 
 
 # ---------- Models (tables) ----------
@@ -43,7 +60,7 @@ EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 class User(UserMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
     email = db.Column(db.String(255), unique=True, nullable=False)
-    password_hash = db.Column(db.String(255), nullable=False)   # never the real password
+    password_hash = db.Column(db.String(255), nullable=False)
     courses = db.relationship("Course", backref="user", cascade="all, delete-orphan")
 
 
@@ -52,7 +69,8 @@ class Course(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
     name = db.Column(db.String(120), nullable=False)
     documents = db.relationship("Document", backref="course", cascade="all, delete-orphan")
-    __table_args__ = (db.UniqueConstraint("user_id", "name"),)   # unique per person, not global
+    cats = db.relationship("Cat", backref="course", cascade="all, delete-orphan")
+    __table_args__ = (db.UniqueConstraint("user_id", "name"),)
 
 
 class Document(db.Model):
@@ -62,6 +80,7 @@ class Document(db.Model):
     stored_name = db.Column(db.String(255), nullable=False)
     page_count = db.Column(db.Integer, nullable=False)
     pages = db.relationship("Page", backref="document", cascade="all, delete-orphan")
+    flashcards = db.relationship("Flashcard", backref="document", cascade="all, delete-orphan")
 
 
 class Page(db.Model):
@@ -75,7 +94,50 @@ class Page(db.Model):
     __table_args__ = (db.UniqueConstraint("document_id", "page_number"),)
 
 
-# ---------- Login plumbing ----------
+class Flashcard(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    document_id = db.Column(db.Integer, db.ForeignKey("document.id"), nullable=False)
+    page_number = db.Column(db.Integer, nullable=False)
+    question = db.Column(db.Text, nullable=False)
+    answer = db.Column(db.Text, nullable=False)
+    box = db.Column(db.Integer, nullable=False, default=1)          # Leitner box 1 (new/weak) to 5 (known)
+    times_right = db.Column(db.Integer, nullable=False, default=0)
+    times_wrong = db.Column(db.Integer, nullable=False, default=0)
+    due_at = db.Column(db.DateTime, nullable=False, default=utcnow)
+
+
+class AiUsage(db.Model):
+    """How many Gemini calls a user has made on a given day (UTC)."""
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+    day = db.Column(db.Date, nullable=False)
+    count = db.Column(db.Integer, nullable=False, default=0)
+    __table_args__ = (db.UniqueConstraint("user_id", "day"),)
+
+
+class Cat(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    course_id = db.Column(db.Integer, db.ForeignKey("course.id"), nullable=False)
+    title = db.Column(db.String(160), nullable=False)
+    created_at = db.Column(db.DateTime, nullable=False, default=utcnow)
+    submitted_at = db.Column(db.DateTime, nullable=True)
+    score = db.Column(db.Integer, nullable=True)                    # number correct
+    questions = db.relationship("CatQuestion", backref="cat", cascade="all, delete-orphan",
+                                order_by="CatQuestion.position")
+
+
+class CatQuestion(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    cat_id = db.Column(db.Integer, db.ForeignKey("cat.id"), nullable=False)
+    position = db.Column(db.Integer, nullable=False)
+    question = db.Column(db.Text, nullable=False)
+    options = db.Column(db.JSON, nullable=False)                    # list of 4 strings
+    correct_index = db.Column(db.Integer, nullable=False)
+    explanation = db.Column(db.Text, nullable=False, default="")
+    chosen_index = db.Column(db.Integer, nullable=True)
+
+
+# ---------- Login plumbing and errors ----------
 
 @login_manager.user_loader
 def load_user(user_id):
@@ -84,12 +146,30 @@ def load_user(user_id):
 
 @login_manager.unauthorized_handler
 def unauthorized():
-    return jsonify(error="login required"), 401   # JSON, not a redirect, because React is the client
+    return jsonify(error="login required"), 401
 
 
-# ---------- Ownership checks ----------
-# Every lookup filters by current_user. A record that isn't yours returns 404
-# (not 403), so nobody can even tell whether someone else's ID exists.
+@app.errorhandler(404)
+def not_found(_):
+    return jsonify(error="not found"), 404
+
+
+@app.errorhandler(405)
+def bad_method(_):
+    return jsonify(error="method not allowed"), 405
+
+
+@app.errorhandler(413)
+def too_large(_):
+    return jsonify(error="file is too large (limit is 50 MB)"), 413
+
+
+@app.errorhandler(429)
+def too_many(_):
+    return jsonify(error="too many attempts, wait a bit and try again"), 429
+
+
+# ---------- Ownership checks (a record that isn't yours returns 404) ----------
 
 def owned_course_or_404(course_id):
     return Course.query.filter_by(id=course_id, user_id=current_user.id).first_or_404()
@@ -97,8 +177,7 @@ def owned_course_or_404(course_id):
 
 def owned_document_or_404(doc_id):
     return (Document.query.join(Course)
-            .filter(Document.id == doc_id, Course.user_id == current_user.id)
-            .first_or_404())
+            .filter(Document.id == doc_id, Course.user_id == current_user.id).first_or_404())
 
 
 def owned_page_or_404(doc_id, page_number):
@@ -106,13 +185,87 @@ def owned_page_or_404(doc_id, page_number):
     return Page.query.filter_by(document_id=doc.id, page_number=page_number).first_or_404()
 
 
+def owned_flashcard_or_404(card_id):
+    return (Flashcard.query.join(Document, Flashcard.document_id == Document.id)
+            .join(Course, Document.course_id == Course.id)
+            .filter(Flashcard.id == card_id, Course.user_id == current_user.id).first_or_404())
+
+
+def owned_cat_or_404(cat_id):
+    return (Cat.query.join(Course)
+            .filter(Cat.id == cat_id, Course.user_id == current_user.id).first_or_404())
+
+
+# ---------- Daily AI limit ----------
+
+def ai_calls_today():
+    row = AiUsage.query.filter_by(user_id=current_user.id, day=utcnow().date()).first()
+    return row.count if row else 0
+
+
+def quota_block():
+    """Returns an error response if the user is out of AI calls today, else None."""
+    if ai_calls_today() >= DAILY_AI_LIMIT:
+        return jsonify(error=f"You've used your {DAILY_AI_LIMIT} AI requests for today. "
+                             "They reset at midnight UTC."), 429
+    return None
+
+
+def record_ai_call():
+    """Adds one to today's count. The caller commits."""
+    row = AiUsage.query.filter_by(user_id=current_user.id, day=utcnow().date()).first()
+    if row is None:
+        row = AiUsage(user_id=current_user.id, day=utcnow().date(), count=0)
+        db.session.add(row)
+    row.count += 1
+
+
+@app.get("/api/ai/usage")
+@login_required
+def ai_usage():
+    return jsonify(used=ai_calls_today(), limit=DAILY_AI_LIMIT)
+
+
+# ---------- JSON helpers ----------
+
 def doc_json(d):
     return {"id": d.id, "course_id": d.course_id, "filename": d.filename, "page_count": d.page_count}
+
+
+def card_json(c):
+    return {"id": c.id, "document_id": c.document_id, "page_number": c.page_number,
+            "question": c.question, "answer": c.answer, "box": c.box,
+            "times_right": c.times_right, "times_wrong": c.times_wrong,
+            "due_at": c.due_at.isoformat()}
+
+
+def cat_summary(c):
+    return {"id": c.id, "course_id": c.course_id, "title": c.title,
+            "created_at": c.created_at.isoformat(), "total": len(c.questions),
+            "submitted": c.submitted_at is not None, "score": c.score}
+
+
+def cat_json(c, reveal):
+    out = cat_summary(c)
+    qs = []
+    for q in c.questions:
+        item = {"id": q.id, "position": q.position, "question": q.question, "options": q.options}
+        if reveal:
+            item.update(correct_index=q.correct_index, explanation=q.explanation,
+                        chosen_index=q.chosen_index)
+        qs.append(item)
+    out["questions"] = qs
+    return out
+
+
+def ai_failure(err):
+    return jsonify(error=str(err)), 502
 
 
 # ---------- Auth ----------
 
 @app.post("/api/auth/register")
+@limiter.limit("10 per hour")
 def register():
     data = request.get_json(silent=True) or {}
     email = str(data.get("email", "")).strip().lower()
@@ -123,7 +276,6 @@ def register():
         return jsonify(error="password must be at least 8 characters"), 400
     if User.query.filter_by(email=email).first():
         return jsonify(error="that email is already registered"), 409
-
     user = User(email=email, password_hash=generate_password_hash(password))
     db.session.add(user)
     db.session.commit()
@@ -132,12 +284,12 @@ def register():
 
 
 @app.post("/api/auth/login")
+@limiter.limit("10 per minute")
 def login():
     data = request.get_json(silent=True) or {}
     email = str(data.get("email", "")).strip().lower()
     password = str(data.get("password", ""))
     user = User.query.filter_by(email=email).first()
-    # Same message for "no such email" and "wrong password" so it doesn't reveal which emails exist
     if not user or not check_password_hash(user.password_hash, password):
         return jsonify(error="invalid email or password"), 401
     login_user(user)
@@ -169,15 +321,26 @@ def list_courses():
 @app.post("/api/courses")
 @login_required
 def create_course():
-    name = (request.get_json(silent=True) or {}).get("name", "").strip()
-    if not name:
-        return jsonify(error="name is required"), 400
+    name = str((request.get_json(silent=True) or {}).get("name", "")).strip()
+    if not name or len(name) > 120:
+        return jsonify(error="name is required (max 120 characters)"), 400
     if Course.query.filter_by(user_id=current_user.id, name=name).first():
         return jsonify(error="you already have a course with that name"), 409
     course = Course(user_id=current_user.id, name=name)
     db.session.add(course)
     db.session.commit()
     return jsonify(id=course.id, name=course.name), 201
+
+
+@app.delete("/api/courses/<int:course_id>")
+@login_required
+def delete_course(course_id):
+    course = owned_course_or_404(course_id)
+    for d in course.documents:
+        (UPLOAD_DIR / d.stored_name).unlink(missing_ok=True)
+    db.session.delete(course)
+    db.session.commit()
+    return jsonify(ok=True)
 
 
 # ---------- Documents ----------
@@ -197,10 +360,9 @@ def upload_document(course_id):
     if not file or not file.filename.lower().endswith(".pdf"):
         return jsonify(error="upload a .pdf file in the 'file' field"), 400
 
-    stored_name = f"{uuid.uuid4().hex}.pdf"   # random name on disk, so names can't be guessed or clash
+    stored_name = f"{uuid.uuid4().hex}.pdf"
     path = UPLOAD_DIR / stored_name
     file.save(path)
-
     try:
         reader = PdfReader(path)
         texts = [(p.extract_text() or "").strip() for p in reader.pages]
@@ -208,13 +370,12 @@ def upload_document(course_id):
         path.unlink(missing_ok=True)
         return jsonify(error="could not read that PDF"), 400
 
-    doc = Document(course_id=course_id, filename=file.filename,
+    doc = Document(course_id=course_id, filename=file.filename[:255],
                    stored_name=stored_name, page_count=len(texts))
     doc.pages = [Page(page_number=i, text=t) for i, t in enumerate(texts, start=1)]
     db.session.add(doc)
     db.session.commit()
-
-    empty = sum(1 for t in texts if not t)    # scanned pages have no text layer
+    empty = sum(1 for t in texts if not t)
     return jsonify(**doc_json(doc), empty_pages=empty), 201
 
 
@@ -223,6 +384,16 @@ def upload_document(course_id):
 def get_document_file(doc_id):
     doc = owned_document_or_404(doc_id)
     return send_from_directory(UPLOAD_DIR.resolve(), doc.stored_name, mimetype="application/pdf")
+
+
+@app.delete("/api/documents/<int:doc_id>")
+@login_required
+def delete_document(doc_id):
+    doc = owned_document_or_404(doc_id)
+    (UPLOAD_DIR / doc.stored_name).unlink(missing_ok=True)
+    db.session.delete(doc)
+    db.session.commit()
+    return jsonify(ok=True)
 
 
 # ---------- Pages and study tracking ----------
@@ -242,7 +413,6 @@ def record_view(doc_id, page_number):
     seconds = (request.get_json(silent=True) or {}).get("seconds", 0)
     if not isinstance(seconds, int) or isinstance(seconds, bool) or seconds < 0:
         return jsonify(error="seconds must be a non-negative integer"), 400
-
     page.seconds_spent += seconds
     if page.seconds_spent >= STUDIED_AFTER_SECONDS:
         page.studied = True
@@ -250,16 +420,252 @@ def record_view(doc_id, page_number):
     return jsonify(seconds_spent=page.seconds_spent, studied=page.studied)
 
 
+def pending_query(course_id):
+    return (Page.query.join(Document)
+            .filter(Document.course_id == course_id, Page.studied.is_(True),
+                    Page.cards_made.is_(False), Page.text != "")
+            .order_by(Page.document_id, Page.page_number))
+
+
 @app.get("/api/courses/<int:course_id>/pending-pages")
 @login_required
 def pending_pages(course_id):
     owned_course_or_404(course_id)
-    rows = (Page.query.join(Document)
-            .filter(Document.course_id == course_id, Page.studied.is_(True),
-                    Page.cards_made.is_(False), Page.text != "")
-            .order_by(Page.document_id, Page.page_number).all())
+    rows = pending_query(course_id).all()
     return jsonify(count=len(rows),
                    pages=[{"document_id": p.document_id, "page_number": p.page_number} for p in rows])
+
+
+# ---------- Flashcards ----------
+
+@app.post("/api/courses/<int:course_id>/flashcards/generate")
+@login_required
+def generate_flashcards(course_id):
+    """Turns studied pages that have no cards yet into flashcards, in ONE Gemini call."""
+    course = owned_course_or_404(course_id)
+    pages = pending_query(course_id).limit(MAX_PAGES_PER_BATCH).all()
+    if not pages:
+        return jsonify(created=0, cards=[], remaining=0,
+                       message="No studied pages are waiting for cards. Read some pages first.")
+    blocked = quota_block()
+    if blocked:
+        return blocked
+
+    refs = {f"P{i}": p for i, p in enumerate(pages, start=1)}
+    payload = [{"ref": r, "text": p.text[:PAGE_CHAR_LIMIT]} for r, p in refs.items()]
+    try:
+        raw = ai.generate_flashcards(course.name, payload)
+    except ai.AIError as e:
+        return ai_failure(e)
+
+    cards = []
+    for item in raw:
+        page = refs.get(item["ref"])
+        if page is None:
+            continue
+        cards.append(Flashcard(document_id=page.document_id, page_number=page.page_number,
+                               question=item["question"], answer=item["answer"], due_at=utcnow()))
+    if not cards:
+        return ai_failure(ai.AIError("The AI didn't produce any usable cards. Try again."))
+
+    db.session.add_all(cards)
+    for p in pages:
+        p.cards_made = True
+    record_ai_call()
+    db.session.commit()
+    remaining = pending_query(course_id).count()
+    return jsonify(created=len(cards), cards=[card_json(c) for c in cards], remaining=remaining), 201
+
+
+def course_cards_query(course_id):
+    return (Flashcard.query.join(Document, Flashcard.document_id == Document.id)
+            .filter(Document.course_id == course_id))
+
+
+@app.get("/api/courses/<int:course_id>/flashcards")
+@login_required
+def list_flashcards(course_id):
+    owned_course_or_404(course_id)
+    cards = course_cards_query(course_id).order_by(Flashcard.document_id, Flashcard.page_number, Flashcard.id)
+    return jsonify([card_json(c) for c in cards])
+
+
+@app.get("/api/courses/<int:course_id>/flashcards/due")
+@login_required
+def due_flashcards(course_id):
+    owned_course_or_404(course_id)
+    limit = min(max(request.args.get("limit", 20, type=int), 1), 100)
+    cards = (course_cards_query(course_id).filter(Flashcard.due_at <= utcnow())
+             .order_by(Flashcard.due_at).limit(limit).all())
+    total_due = course_cards_query(course_id).filter(Flashcard.due_at <= utcnow()).count()
+    return jsonify(total_due=total_due, cards=[card_json(c) for c in cards])
+
+
+@app.post("/api/flashcards/<int:card_id>/review")
+@login_required
+def review_flashcard(card_id):
+    card = owned_flashcard_or_404(card_id)
+    correct = (request.get_json(silent=True) or {}).get("correct")
+    if not isinstance(correct, bool):
+        return jsonify(error="'correct' must be true or false"), 400
+    if correct:
+        card.box = min(card.box + 1, 5)
+        card.times_right += 1
+    else:
+        card.box = 1
+        card.times_wrong += 1
+    card.due_at = utcnow() + timedelta(days=BOX_INTERVAL_DAYS[card.box])
+    db.session.commit()
+    return jsonify(card_json(card))
+
+
+@app.delete("/api/flashcards/<int:card_id>")
+@login_required
+def delete_flashcard(card_id):
+    card = owned_flashcard_or_404(card_id)
+    db.session.delete(card)
+    db.session.commit()
+    return jsonify(ok=True)
+
+
+# ---------- Ask the AI / quick question ----------
+
+@app.post("/api/documents/<int:doc_id>/pages/<int:page_number>/ask")
+@login_required
+def ask_ai(doc_id, page_number):
+    page = owned_page_or_404(doc_id, page_number)
+    question = str((request.get_json(silent=True) or {}).get("question", "")).strip()
+    if not question or len(question) > 1000:
+        return jsonify(error="write a question (max 1000 characters)"), 400
+    if not page.text:
+        return jsonify(error="this page has no readable text (it may be a scan)"), 400
+    blocked = quota_block()
+    if blocked:
+        return blocked
+    try:
+        answer = ai.ask(page.document.course.name, page.text[:PAGE_CHAR_LIMIT], question)
+    except ai.AIError as e:
+        return ai_failure(e)
+    record_ai_call()
+    db.session.commit()
+    return jsonify(answer=answer)
+
+
+@app.post("/api/courses/<int:course_id>/quick-question")
+@login_required
+def quick_question(course_id):
+    """One question from a random page you've studied. The reader calls this on a timer."""
+    course = owned_course_or_404(course_id)
+    page = (Page.query.join(Document)
+            .filter(Document.course_id == course_id, Page.studied.is_(True), Page.text != "")
+            .order_by(func.random()).first())
+    if page is None:
+        return jsonify(error="study a few pages first, then I can quiz you"), 404
+    blocked = quota_block()
+    if blocked:
+        return blocked
+    try:
+        qa = ai.quick_question(course.name, page.text[:PAGE_CHAR_LIMIT])
+    except ai.AIError as e:
+        return ai_failure(e)
+    record_ai_call()
+    db.session.commit()
+    return jsonify(**qa, document_id=page.document_id, page_number=page.page_number)
+
+
+# ---------- CATs ----------
+
+def cat_material(course_id, document_ids):
+    q = (Page.query.join(Document)
+         .filter(Document.course_id == course_id, Page.text != "")
+         .order_by(Page.document_id, Page.page_number))
+    if document_ids:
+        q = q.filter(Document.id.in_(document_ids))
+    pages = q.all()
+    if len(pages) > CAT_MAX_PAGES:   # spread the sample across all the material
+        pages = [pages[int(i * len(pages) / CAT_MAX_PAGES)] for i in range(CAT_MAX_PAGES)]
+    return "\n\n".join(f"[{p.document.filename}, page {p.page_number}]\n{p.text[:CAT_PAGE_CHARS]}"
+                       for p in pages)
+
+
+@app.get("/api/courses/<int:course_id>/cats")
+@login_required
+def list_cats(course_id):
+    owned_course_or_404(course_id)
+    cats = Cat.query.filter_by(course_id=course_id).order_by(Cat.created_at.desc())
+    return jsonify([cat_summary(c) for c in cats])
+
+
+@app.post("/api/courses/<int:course_id>/cats")
+@login_required
+def create_cat(course_id):
+    course = owned_course_or_404(course_id)
+    data = request.get_json(silent=True) or {}
+    title = str(data.get("title", "")).strip()[:160] or f"{course.name} CAT"
+    n = data.get("num_questions", 5)
+    if not isinstance(n, int) or isinstance(n, bool) or not 3 <= n <= 15:
+        return jsonify(error="num_questions must be a whole number from 3 to 15"), 400
+    doc_ids = data.get("document_ids") or []
+    if not isinstance(doc_ids, list) or not all(isinstance(i, int) for i in doc_ids):
+        return jsonify(error="document_ids must be a list of numbers"), 400
+
+    material = cat_material(course_id, doc_ids)
+    if not material:
+        return jsonify(error="no readable text found. Upload PDFs to this course first."), 400
+    blocked = quota_block()
+    if blocked:
+        return blocked
+    try:
+        questions = ai.generate_cat(course.name, material, n)
+    except ai.AIError as e:
+        return ai_failure(e)
+
+    cat = Cat(course_id=course_id, title=title)
+    cat.questions = [CatQuestion(position=i, question=q["question"], options=q["options"],
+                                 correct_index=q["correct_index"], explanation=q["explanation"])
+                     for i, q in enumerate(questions, start=1)]
+    db.session.add(cat)
+    record_ai_call()
+    db.session.commit()
+    return jsonify(cat_json(cat, reveal=False)), 201
+
+
+@app.get("/api/cats/<int:cat_id>")
+@login_required
+def get_cat(cat_id):
+    cat = owned_cat_or_404(cat_id)
+    return jsonify(cat_json(cat, reveal=cat.submitted_at is not None))
+
+
+@app.post("/api/cats/<int:cat_id>/submit")
+@login_required
+def submit_cat(cat_id):
+    cat = owned_cat_or_404(cat_id)
+    if cat.submitted_at is not None:
+        return jsonify(error="this CAT was already submitted"), 409
+    answers = (request.get_json(silent=True) or {}).get("answers")
+    if (not isinstance(answers, list) or len(answers) != len(cat.questions)
+            or not all(a is None or (isinstance(a, int) and not isinstance(a, bool) and 0 <= a <= 3)
+                       for a in answers)):
+        return jsonify(error=f"send 'answers': a list of {len(cat.questions)} items, "
+                             "each 0 to 3 (or null to skip)"), 400
+    score = 0
+    for q, a in zip(cat.questions, answers):
+        q.chosen_index = a
+        score += 1 if a == q.correct_index else 0
+    cat.score = score
+    cat.submitted_at = utcnow()
+    db.session.commit()
+    return jsonify(cat_json(cat, reveal=True))
+
+
+@app.delete("/api/cats/<int:cat_id>")
+@login_required
+def delete_cat(cat_id):
+    cat = owned_cat_or_404(cat_id)
+    db.session.delete(cat)
+    db.session.commit()
+    return jsonify(ok=True)
 
 
 if __name__ == "__main__":

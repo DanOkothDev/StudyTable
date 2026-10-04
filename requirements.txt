@@ -1,9 +1,11 @@
 flask
 flask-cors
+flask-limiter
 flask-login
 flask-migrate
 flask-sqlalchemy
+google-genai
 psycopg2-binary
 pypdf
 python-dotenv
-
+requests
