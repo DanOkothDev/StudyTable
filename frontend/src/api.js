@@ -40,6 +40,13 @@ export const api = {
     req(`/flashcards/${cardId}/review`, send("POST", { correct })),
   quick: (courseId) =>
     req(`/courses/${courseId}/quick-question`, { method: "POST" }),
+  cats: (courseId) => req(`/courses/${courseId}/cats`),
+  createCat: (courseId, body) =>
+    req(`/courses/${courseId}/cats`, send("POST", body)),
+  cat: (id) => req(`/cats/${id}`),
+  submitCat: (id, answers) =>
+    req(`/cats/${id}/submit`, send("POST", { answers })),
+  deleteCat: (id) => req(`/cats/${id}`, { method: "DELETE" }),
   upload: (courseId, file) => {
     const form = new FormData();
     form.append("file", file);

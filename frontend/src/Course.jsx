@@ -1,10 +1,14 @@
 import { useEffect, useState } from "react";
 import { api } from "./api";
+import Cats from "./Cats";
+import CatRun from "./CatRun";
 
 export default function Course({ course, onBack, onOpenDoc }) {
   const [docs, setDocs] = useState(null);
   const [queue, setQueue] = useState([]);
   const [over, setOver] = useState(false);
+  const [tab, setTab] = useState("files");
+  const [catId, setCatId] = useState(null);
 
   useEffect(() => {
     api
@@ -32,6 +36,8 @@ export default function Course({ course, onBack, onOpenDoc }) {
     }
   }
 
+  if (catId) return <CatRun id={catId} onBack={() => setCatId(null)} />;
+
   const count = docs ? docs.length : 0;
 
   return (
@@ -56,53 +62,76 @@ export default function Course({ course, onBack, onOpenDoc }) {
         {docs ? `${count} ${count === 1 ? "file" : "files"}` : "\u00A0"}
       </p>
 
-      <label
-        className={"drop" + (over ? " over" : "")}
-        onDragOver={(e) => {
-          e.preventDefault();
-          setOver(true);
-        }}
-        onDragLeave={() => setOver(false)}
-        onDrop={(e) => {
-          e.preventDefault();
-          setOver(false);
-          addFiles(e.dataTransfer.files);
-        }}
-      >
-        <input
-          type="file"
-          accept="application/pdf"
-          multiple
-          onChange={(e) => {
-            addFiles(e.target.files);
-            e.target.value = "";
-          }}
-        />
-        <strong>Drop PDFs here</strong>
-        <span>or click to choose files</span>
-      </label>
+      <div className="ctabs" role="tablist">
+        <button
+          role="tab"
+          aria-selected={tab === "files"}
+          onClick={() => setTab("files")}
+        >
+          Files
+        </button>
+        <button
+          role="tab"
+          aria-selected={tab === "cats"}
+          onClick={() => setTab("cats")}
+        >
+          CATs
+        </button>
+      </div>
 
-      <ul className="docs">
-        {queue.map((q) => (
-          <li className={"doc " + (q.error ? "bad" : "busy")} key={q.key}>
-            <span className="ico" />
-            <span className="nm">{q.name}</span>
-            <span className="meta">{q.error || "Reading pages…"}</span>
-          </li>
-        ))}
-        {(docs || []).map((d) => (
-          <li key={d.id}>
-            <button className="doc open" onClick={() => onOpenDoc(d)}>
-              <span className="ico" />
-              <span className="nm">{d.filename}</span>
-              <span className="meta">
-                {d.page_count} pages
-                {d.empty_pages ? `, ${d.empty_pages} without text` : ""}
-              </span>
-            </button>
-          </li>
-        ))}
-      </ul>
+      {tab === "cats" ? (
+        <Cats course={course} docs={docs || []} onOpen={setCatId} />
+      ) : (
+        <>
+          <label
+            className={"drop" + (over ? " over" : "")}
+            onDragOver={(e) => {
+              e.preventDefault();
+              setOver(true);
+            }}
+            onDragLeave={() => setOver(false)}
+            onDrop={(e) => {
+              e.preventDefault();
+              setOver(false);
+              addFiles(e.dataTransfer.files);
+            }}
+          >
+            <input
+              type="file"
+              accept="application/pdf"
+              multiple
+              onChange={(e) => {
+                addFiles(e.target.files);
+                e.target.value = "";
+              }}
+            />
+            <strong>Drop PDFs here</strong>
+            <span>or click to choose files</span>
+          </label>
+
+          <ul className="docs">
+            {queue.map((q) => (
+              <li className={"doc " + (q.error ? "bad" : "busy")} key={q.key}>
+                <span className="ico" />
+                <span className="nm">{q.name}</span>
+                <span className="meta">{q.error || "Reading pages…"}</span>
+              </li>
+            ))}
+            {(docs || []).map((d) => (
+              <li key={d.id}>
+                <button className="doc open" onClick={() => onOpenDoc(d)}>
+                  <span className="ico" />
+                  <span className="nm">{d.filename}</span>
+                  <span className="meta">
+                    {d.page_count} pages
+                    {d.empty_pages ? `, ${d.empty_pages} without text` : ""}
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
     </>
   );
 }
