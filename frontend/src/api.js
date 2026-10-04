@@ -50,6 +50,16 @@ export const api = {
   years: () => req("/years"),
   createYear: (number) => req("/years", send("POST", number ? { number } : {})),
   semester: (id) => req(`/semesters/${id}`),
+  classes: (date) => req(`/classes?date=${encodeURIComponent(date)}`),
+  classRecap: (id) => req(`/classes/${id}/recap`, { method: "POST" }),
+  uploadTimetable: (semesterId, file) => {
+    const form = new FormData();
+    form.append("file", file);
+    return req(`/semesters/${semesterId}/timetable`, {
+      method: "POST",
+      body: form,
+    });
+  },
   createUnit: (semesterId, name) =>
     req("/courses", send("POST", { name, semester_id: semesterId })),
   moveCourse: (id, semesterId) =>

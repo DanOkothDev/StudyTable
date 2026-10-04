@@ -32,6 +32,7 @@ The app uses Google Gemini for these functions:
 - Get a short quick-question quiz while studying.
 - Generate flashcards from course material.
 - Generate CAT (Continuous Assessment Test) questions from course notes.
+- Extract recurring semester classes from lecture timetables and generate pre-class recaps.
 - Daily AI usage limits are enforced per user.
 
 ### 5. CAT assessments
@@ -39,6 +40,13 @@ The app uses Google Gemini for these functions:
 - Generate multiple-choice questions with options and answer explanations.
 - Submit answers and score each CAT.
 - Keep a record of the CAT results and submitted state.
+
+### 6. Lecture timetable reminders and preparation
+- Upload a text-based PDF semester lecture timetable.
+- Timetable PDFs must contain selectable text; scanned/image-only PDFs are not OCRed.
+- Extract recurring class days, times, and course names with Gemini.
+- See tomorrow's classes on the home page.
+- Open a pre-class recap based on readable course PDFs, or on general knowledge when no readable course material is available.
 
 ## App architecture
 
@@ -77,6 +85,7 @@ The app uses Google Gemini for these functions:
 8. Use the AI tutor to ask questions about the current page.
 9. Review cards until they are due again.
 10. Generate CAT quizzes or quick questions when revision is needed.
+11. Upload a lecture timetable to a semester and open next-day class preparation recaps from Home.
 
 ## Configuration
 

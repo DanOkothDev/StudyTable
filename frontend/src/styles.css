@@ -219,6 +219,34 @@ button.doc:hover { transform: translateY(-2px); border-color: var(--blue); }
 .scan-note { margin: 0 0 10px; padding: 9px 14px; background: #fff3c4; border-radius: 12px; font-size: .88rem; animation: enter .4s var(--ease); }
 .folder.new.open .chips { margin-top: 6px; }
 
+/* timetable reminders and recaps */
+.tomorrow { margin: 0 0 34px; padding: 22px 24px; border: 1px solid var(--line); border-radius: 20px; background: #fff; }
+.tomorrow h2, .timetable h2, .recap h2 { margin: 0 0 8px; font-size: 1.18rem; font-weight: 600; }
+.tomorrow > p { margin: 0; color: var(--muted); }
+.assessment-alert { width: 100%; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 16px; padding: 13px 0; text-align: left; border-top: 1px solid var(--line); }
+.assessment-alert strong { font-weight: 600; }
+.assessment-alert span, .timetable p { color: var(--muted); font-size: .92rem; }
+.assessment-alert:hover strong { color: var(--blue); }
+.timetable { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin: 0 0 22px; padding: 18px 22px; border: 1px solid var(--line); border-radius: 18px; background: #fff; }
+.timetable h2 { margin-bottom: 2px; }
+.timetable p { margin: 0; overflow-wrap: anywhere; }
+.timetable-upload { position: relative; flex: none; padding: 10px 16px; border-radius: 999px; background: var(--ink); color: #fff; cursor: pointer; font-size: .9rem; font-weight: 600; }
+.timetable-upload:hover { background: var(--blue); }
+.timetable-upload input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.assessment-list { list-style: none; margin: 0 0 28px; padding: 0; display: grid; gap: 8px; }
+.assessment-list li { display: grid; grid-template-columns: 180px minmax(120px, 1fr) 1fr; align-items: center; gap: 12px; padding: 12px 16px; background: #fff; border: 1px solid var(--line); border-radius: 14px; }
+.assessment-list time, .assessment-list li span, .recap-source { color: var(--muted); font-size: .9rem; }
+.assessment-empty { margin: 0 0 28px; color: var(--muted); font-size: .92rem; }
+.recap { max-width: 760px; padding: 24px; border: 1px solid var(--line); border-radius: 22px; background: #fff; }
+.recap-source { margin: 0 0 22px; }
+.recap-content { color: #303954; line-height: 1.75; white-space: pre-wrap; }
+.recap-retry { margin-top: 8px; }
+@media (max-width: 560px) {
+  .timetable { align-items: flex-start; flex-direction: column; }
+  .assessment-list li { grid-template-columns: 1fr 1fr; }
+  .assessment-list time { grid-column: 1 / -1; }
+}
+
 /* login and sign-up */
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .sx { display: grid; grid-template-columns: 1fr 1fr; width: min(100%, 880px); min-height: 540px; background: #fff; border-radius: 30px; overflow: hidden; box-shadow: 0 30px 60px -32px rgba(11, 77, 51, .4); animation: enter .6s var(--ease); }

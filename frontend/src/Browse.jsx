@@ -3,6 +3,7 @@ import { api } from './api';
 
 const TINTS = ['#FFD3BF', '#CFDCFF', '#CDEFD9', '#F9D5E8', '#FFEBA3', '#DCD2FA'];
 const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+const WEEKDAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 const yearsCache = { promise: null, data: null };
 const semesterCache = new Map();
 
@@ -53,6 +54,17 @@ export function Years({ onOpen }) {
     loadYears().then(setYears).catch((e) => setError(e.message));
   }, []);
 
+  const tomorrowDate = new Date();
+  tomorrowDate.setDate(tomorrowDate.getDate() + 1);
+  const tomorrowKey = `${tomorrowDate.getFullYear()}-${String(tomorrowDate.getMonth() + 1).padStart(2, '0')}-${String(tomorrowDate.getDate()).padStart(2, '0')}`;
+  const [classes, setClasses] = useState(null);
+
+  useEffect(() => {
+    api.classes(tomorrowKey)
+      .then(setClasses)
+      .catch((e) => setError(e.message));
+  }, [tomorrowKey]);
+
   const hour = new Date().getHours();
   const hello = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
   const free = years ? [1, 2, 3, 4, 5, 6].filter((n) => !years.some((y) => y.number === n)) : [];
@@ -82,6 +94,17 @@ export function Years({ onOpen }) {
       <h1>{hello}</h1>
       <p className="sub">{years && years.length === 0 ? 'Start by adding the year you are in.' : 'Pick a year to keep studying.'}</p>
       {error && <p className="error" role="alert">{error}</p>}
+      <section className="tomorrow">
+        <h2>Tomorrow&apos;s classes</h2>
+        {classes === null ? <p>Checking your timetable…</p> : classes.length === 0 ? (
+          <p>No classes scheduled for tomorrow.</p>
+        ) : classes.map((item) => (
+          <button className="assessment-alert" key={item.id} onClick={() => onOpen(item)}>
+            <strong>{item.course_name} — {item.title}</strong>
+            <span>{item.start_time ? `${item.start_time} · ` : ''}Review before class</span>
+          </button>
+        ))}
+      </section>
       <Grid onOpen={(it) => onOpen({ id: it.id, number: it.raw.number })} add={slot}
             items={years && years.map((y) => ({
               id: y.id, name: `Year ${y.number}`, raw: y,
@@ -134,13 +157,65 @@ function NewUnit({ onCreate, i }) {
 
 export function SemesterView({ sem, onOpen }) {
   const [units, setUnits] = useState(null);
+  const [semester, setSemester] = useState(null);
+  const [uploading, setUploading] = useState(false);
+  const [error, setError] = useState('');
   useEffect(() => {
-    loadSemester(sem.id).then((s) => setUnits(s.courses));
+    loadSemester(sem.id).then((s) => {
+      setUnits(s.courses);
+      setSemester(s);
+    }).catch((e) => setError(e.message));
   }, [sem.id]);
+
+  async function uploadTimetable(file) {
+    setUploading(true);
+    setError('');
+    try {
+      const result = await api.uploadTimetable(sem.id, file);
+      const next = { ...semester, timetable_filename: result.timetable_filename, classes: result.classes };
+      setSemester(next);
+      semesterCache.set(sem.id, Promise.resolve(next));
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setUploading(false);
+    }
+  }
+
   return (
     <>
       <h1>Semester {sem.number}</h1>
       <p className="sub">{units && units.length === 0 ? 'Add a unit, then drop your PDFs in.' : 'Pick a unit to keep studying.'}</p>
+      <section className="timetable">
+        <div>
+          <h2>Class timetable</h2>
+          <p>{semester?.timetable_filename || 'Upload this semester’s lecture timetable to get reminders and pre-class recaps.'}</p>
+        </div>
+        <label className="timetable-upload">
+          <input type="file" accept="application/pdf,.pdf" disabled={uploading || !semester}
+                 onChange={(e) => {
+                   const file = e.target.files[0];
+                   if (file) uploadTimetable(file);
+                   e.target.value = '';
+                 }} />
+          {uploading ? 'Reading timetable…' : semester?.timetable_filename ? 'Replace PDF' : 'Upload PDF'}
+        </label>
+      </section>
+      {error && <p className="error" role="alert">{error}</p>}
+      {semester?.classes?.length > 0 && (
+        <ul className="assessment-list">
+          {semester.classes.map((item) => (
+            <li key={item.id}>
+              <time>{WEEKDAYS[item.weekday]}{item.start_time ? ` · ${item.start_time}` : ''}</time>
+              <strong>{item.course_name}</strong>
+              <span>{item.title}{item.end_time ? ` · until ${item.end_time}` : ''}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {semester?.timetable_filename && semester.classes.length === 0 && (
+        <p className="assessment-empty">No classes were extracted yet. Replace or re-upload this PDF to try the updated timetable reader.</p>
+      )}
       <Grid onOpen={(it) => onOpen({ id: it.id, name: it.name })}
             items={units && units.map((c) => ({
               id: c.id, name: c.name, meta: c.document_count ? plural(c.document_count, 'file') : 'No files yet',

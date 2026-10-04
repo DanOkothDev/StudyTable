@@ -5,6 +5,7 @@ import Auth from "./Auth";
 import { Years, YearView, SemesterView } from "./Browse";
 import Course from "./Course";
 import Reader from "./Reader";
+import Recap from "./Recap";
 
 export default function App() {
   const [user, setUser] = useState(undefined); // undefined = still checking the cookie
@@ -31,12 +32,13 @@ export default function App() {
     setNav({});
   }
 
-  const { year, sem, course, doc } = nav;
+  const { year, sem, course, doc, recap } = nav;
   const reading = course && doc;
   const crumbs = [];
   if (year) crumbs.push([`Year ${year.number}`, { year }]);
   if (sem) crumbs.push([`Semester ${sem.number}`, { year, sem }]);
   if (course) crumbs.push([course.name, { year, sem, course }]);
+  if (recap) crumbs.push([`${recap.course_name} recap`, { recap }]);
 
   return (
     <div className={"shell" + (reading ? " wide" : "")}>
@@ -67,7 +69,7 @@ export default function App() {
       )}
       <main
         className="page"
-        key={[year?.id, sem?.id, course?.id, doc?.id].join("-")}
+        key={[year?.id, sem?.id, course?.id, doc?.id, recap?.id].join("-")}
       >
         {reading ? (
           <Reader
@@ -75,6 +77,8 @@ export default function App() {
             doc={doc}
             onBack={() => setNav({ year, sem, course })}
           />
+        ) : recap ? (
+          <Recap event={recap} onBack={() => setNav({})} />
         ) : course ? (
           <Course
             course={course}
@@ -92,7 +96,9 @@ export default function App() {
         ) : year ? (
           <YearView year={year} onOpen={(s) => setNav({ year, sem: s })} />
         ) : (
-          <Years onOpen={(y) => setNav({ year: y })} />
+          <Years onOpen={(item) => item.semester_id
+            ? setNav({ recap: item })
+            : setNav({ year: item })} />
         )}
       </main>
     </div>

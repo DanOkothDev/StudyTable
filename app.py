@@ -4,7 +4,7 @@ import threading
 import time
 import uuid
 from collections import defaultdict, deque
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -76,6 +76,98 @@ def extract_pages(path):
         pdf.close()
 
 
+def extract_timetable_layout(path):
+    """Preserve PDF text positions so weekly timetable rows and columns stay associated."""
+    pdf = pdfium.PdfDocument(str(path))
+    try:
+        pages = []
+        for page_number in range(len(pdf)):
+            page = pdf[page_number]
+            textpage = page.get_textpage()
+            text = textpage.get_text_range().replace("\x00", "").strip()
+            width, _ = page.get_size()
+            weekdays = {}
+            for match in re.finditer(
+                    r"\b(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\b",
+                    text, re.IGNORECASE):
+                boxes = [textpage.get_charbox(i) for i in range(match.start(), match.end())]
+                x = sum((box[0] + box[2]) / 2 for box in boxes) / len(boxes)
+                y = sum((box[1] + box[3]) / 2 for box in boxes) / len(boxes)
+                if x < width * 0.2:
+                    weekdays[match.group().capitalize()] = y
+
+            if not weekdays:
+                pages.append(text)
+                textpage.close()
+                page.close()
+                continue
+
+            ordered_days = sorted(weekdays.items(), key=lambda item: item[1], reverse=True)
+            row_gaps = [ordered_days[i][1] - ordered_days[i + 1][1]
+                        for i in range(len(ordered_days) - 1)]
+            row_threshold = min(16, min(row_gaps) * 0.46) if row_gaps else 16
+
+            hours = []
+            for match in re.finditer(r"\d{1,2}:\d{2}\s*-\s*\d{1,2}:\d{2}", text):
+                boxes = [textpage.get_charbox(i) for i in range(match.start(), match.end())]
+                left = min(box[0] for box in boxes)
+                right = max(box[2] for box in boxes)
+                hours.append((left, right, match.group().replace(" ", "")))
+
+            entries = {day: [] for day, _ in ordered_days}
+            for line in re.finditer(r"[^\r\n]+", text):
+                glyphs = []
+                for index in range(line.start(), line.end()):
+                    char = text[index]
+                    if char.isspace():
+                        continue
+                    left, bottom, right, top = textpage.get_charbox(index)
+                    if right > left and top > bottom:
+                        glyphs.append((index, char, left, bottom, right, top))
+                segments = []
+                current = []
+                for glyph in glyphs:
+                    if current and glyph[2] - current[-1][4] > 18:
+                        segments.append(current)
+                        current = []
+                    current.append(glyph)
+                if current:
+                    segments.append(current)
+
+                for segment in segments:
+                    start, end = segment[0][0], segment[-1][0] + 1
+                    value = text[start:end].strip()
+                    if not value:
+                        continue
+                    center_y = sum((glyph[3] + glyph[5]) / 2 for glyph in segment) / len(segment)
+                    center_x = sum((glyph[2] + glyph[4]) / 2 for glyph in segment) / len(segment)
+                    day, day_y = min(ordered_days, key=lambda item: abs(item[1] - center_y))
+                    if abs(day_y - center_y) > row_threshold or center_x < width * 0.12:
+                        continue
+                    if re.fullmatch(r"(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)",
+                                    value, re.IGNORECASE):
+                        continue
+                    entries[day].append((center_x, center_y, value))
+
+            lines = ["Weekly timetable layout (PDF x coordinates increase from left to right)."]
+            if hours:
+                header = ", ".join(
+                    f"x={left:.0f}-{right:.0f}: {label}" for left, right, label in sorted(hours))
+                lines.append(f"Hour headers: {header}")
+            for day, _ in ordered_days:
+                fragments = sorted(entries[day], key=lambda item: (-item[1], item[0]))
+                if fragments:
+                    lines.append(f"{day} row:")
+                    lines.extend(
+                        f"  x={x:.0f}, y={y:.0f}: {value}" for x, y, value in fragments)
+            pages.append("\n".join(lines))
+            textpage.close()
+            page.close()
+        return pages
+    finally:
+        pdf.close()
+
+
 def utcnow():
     return datetime.now(timezone.utc).replace(tzinfo=None)   # UTC, stored without tzinfo
 
@@ -105,8 +197,38 @@ class Semester(db.Model):
     year_id = db.Column(db.Integer, db.ForeignKey("year.id"), nullable=False)
     number = db.Column(db.Integer, nullable=False)              # 1 or 2
     courses = db.relationship("Course", backref="semester")     # a unit is a Course
+    timetable_filename = db.Column(db.String(255), nullable=True)
+    timetable_stored_name = db.Column(db.String(255), nullable=True)
+    assessments = db.relationship("Assessment", backref="semester", cascade="all, delete-orphan",
+                                  order_by="Assessment.date")
+    classes = db.relationship("ClassSession", backref="semester", cascade="all, delete-orphan",
+                              order_by="ClassSession.weekday, ClassSession.start_time")
     __table_args__ = (db.UniqueConstraint("year_id", "number"),
                       db.Index("ix_semester_year_number", "year_id", "number"))
+
+
+class Assessment(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    semester_id = db.Column(db.Integer, db.ForeignKey("semester.id"), nullable=False)
+    course_id = db.Column(db.Integer, db.ForeignKey("course.id"), nullable=True)
+    course_name = db.Column(db.String(120), nullable=False)
+    title = db.Column(db.String(160), nullable=False)
+    date = db.Column(db.Date, nullable=False)
+    __table_args__ = (db.Index("ix_assessment_semester_date", "semester_id", "date"),
+                      db.Index("ix_assessment_date", "date"))
+
+
+class ClassSession(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    semester_id = db.Column(db.Integer, db.ForeignKey("semester.id"), nullable=False)
+    course_id = db.Column(db.Integer, db.ForeignKey("course.id"), nullable=True)
+    course_name = db.Column(db.String(120), nullable=False)
+    title = db.Column(db.String(160), nullable=False)
+    weekday = db.Column(db.Integer, nullable=False)
+    start_time = db.Column(db.Time, nullable=True)
+    end_time = db.Column(db.Time, nullable=True)
+    __table_args__ = (db.Index("ix_class_session_semester_weekday", "semester_id", "weekday"),
+                      db.Index("ix_class_session_weekday", "weekday"))
 
 
 class Course(db.Model):
@@ -116,6 +238,7 @@ class Course(db.Model):
     name = db.Column(db.String(120), nullable=False)
     documents = db.relationship("Document", backref="course", cascade="all, delete-orphan")
     cats = db.relationship("Cat", backref="course", cascade="all, delete-orphan")
+    class_sessions = db.relationship("ClassSession", backref="course")
     __table_args__ = (db.UniqueConstraint("user_id", "name"),
                       db.Index("ix_course_user_name", "user_id", "name"),
                       db.Index("ix_course_user_semester", "user_id", "semester_id"))
@@ -366,6 +489,20 @@ def cat_summary(c):
             "submitted": c.submitted_at is not None, "score": c.score}
 
 
+def assessment_json(assessment):
+    return {"id": assessment.id, "semester_id": assessment.semester_id,
+            "course_id": assessment.course_id, "course_name": assessment.course_name,
+            "title": assessment.title, "date": assessment.date.isoformat()}
+
+
+def class_session_json(session):
+    return {"id": session.id, "semester_id": session.semester_id,
+            "course_id": session.course_id, "course_name": session.course_name,
+            "title": session.title, "weekday": session.weekday,
+            "start_time": session.start_time.strftime("%H:%M") if session.start_time else None,
+            "end_time": session.end_time.strftime("%H:%M") if session.end_time else None}
+
+
 def cat_json(c, reveal):
     out = cat_summary(c)
     qs = []
@@ -470,7 +607,139 @@ def get_semester(semester_id):
     sem = owned_semester_or_404(semester_id)
     units = sorted(sem.courses, key=lambda c: c.name.lower())
     return jsonify(id=sem.id, number=sem.number, year={"id": sem.year.id, "number": sem.year.number},
-                   courses=[{"id": c.id, "name": c.name, "document_count": len(c.documents)} for c in units])
+                   courses=[{"id": c.id, "name": c.name, "document_count": len(c.documents)} for c in units],
+                   timetable_filename=sem.timetable_filename,
+                   classes=[class_session_json(session) for session in sem.classes])
+
+
+@app.post("/api/semesters/<int:semester_id>/timetable")
+@login_required
+def upload_timetable(semester_id):
+    sem = owned_semester_or_404(semester_id)
+    file = request.files.get("file")
+    if not file or not file.filename.lower().endswith(".pdf"):
+        return jsonify(error="upload a .pdf timetable in the 'file' field"), 400
+
+    stored_name = f"{uuid.uuid4().hex}.pdf"
+    path = UPLOAD_DIR / stored_name
+    file.save(path)
+    try:
+        pages = extract_timetable_layout(path)
+    except Exception:
+        path.unlink(missing_ok=True)
+        return jsonify(error="could not read that timetable PDF"), 400
+    timetable_text = "\n\n".join(text for text in pages if text).strip()
+    if not timetable_text:
+        path.unlink(missing_ok=True)
+        return jsonify(error="this PDF has no readable text; upload a text-based timetable PDF"), 400
+
+    blocked = quota_block()
+    if blocked:
+        path.unlink(missing_ok=True)
+        return blocked
+
+    courses = sorted(sem.courses, key=lambda c: c.name.lower())
+    try:
+        parsed = ai.extract_classes([course.name for course in courses], timetable_text[:30000])
+    except ai.AIError as e:
+        path.unlink(missing_ok=True)
+        return ai_failure(e)
+
+    matched_courses = {course.name.casefold(): course for course in courses}
+    classes = []
+    seen = set()
+    for item in parsed:
+        name = item["course_name"]
+        title = item["title"]
+        weekday = item["weekday"]
+        start_time = datetime.strptime(item["start_time"], "%H:%M").time() if item["start_time"] else None
+        end_time = datetime.strptime(item["end_time"], "%H:%M").time() if item["end_time"] else None
+        course = matched_courses.get(name.casefold())
+        key = (weekday, (course.id if course else None), title.casefold(), start_time)
+        if key in seen:
+            continue
+        seen.add(key)
+        classes.append(ClassSession(
+            course_id=course.id if course else None,
+            course_name=course.name if course else name,
+            title=title,
+            weekday=weekday,
+            start_time=start_time,
+            end_time=end_time,
+        ))
+
+    if not classes:
+        path.unlink(missing_ok=True)
+        return jsonify(error="no recurring classes were detected; upload a lecture timetable with course names and weekdays"), 422
+
+    previous_path = UPLOAD_DIR / sem.timetable_stored_name if sem.timetable_stored_name else None
+    try:
+        ClassSession.query.filter_by(semester_id=sem.id).delete()
+        sem.classes = classes
+        sem.timetable_filename = file.filename[:255]
+        sem.timetable_stored_name = stored_name
+        record_ai_call()
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        path.unlink(missing_ok=True)
+        raise
+
+    if previous_path and previous_path != path:
+        previous_path.unlink(missing_ok=True)
+    return jsonify(timetable_filename=sem.timetable_filename,
+                   classes=[class_session_json(session) for session in sem.classes]), 201
+
+
+@app.get("/api/classes")
+@login_required
+def list_classes_for_date():
+    date_value = request.args.get("date", "")
+    try:
+        target_date = date.fromisoformat(date_value)
+    except ValueError:
+        return jsonify(error="date must use YYYY-MM-DD format"), 400
+    if target_date.isoformat() != date_value:
+        return jsonify(error="date must use YYYY-MM-DD format"), 400
+    weekday = target_date.weekday()
+    classes = (ClassSession.query.join(Semester).join(Year)
+               .filter(Year.user_id == current_user.id, ClassSession.weekday == weekday)
+               .order_by(ClassSession.start_time, ClassSession.course_name, ClassSession.title).all())
+    return jsonify([class_session_json(session) for session in classes])
+
+
+@app.post("/api/classes/<int:session_id>/recap")
+@login_required
+def generate_class_recap(session_id):
+    session = (ClassSession.query.join(Semester).join(Year)
+                  .filter(ClassSession.id == session_id, Year.user_id == current_user.id)
+                  .first_or_404())
+    course = db.session.get(Course, session.course_id) if session.course_id else None
+    if course is None:
+        course = next((item for item in session.semester.courses
+                       if item.name.casefold() == session.course_name.casefold()), None)
+    pages = []
+    if course:
+        pages = (Page.query.join(Document)
+                 .filter(Document.course_id == course.id, Page.text != "")
+                 .order_by(Page.document_id, Page.page_number).all())
+    material = "\n\n".join(
+        f"[{page.document.filename}, page {page.page_number}]\n{page.text[:1200]}"
+        for page in pages[:20]
+    )[:18000]
+
+    blocked = quota_block()
+    if blocked:
+        return blocked
+    try:
+        recap = ai.generate_class_recap(
+            session.course_name, session.title, session.start_time.strftime("%H:%M") if session.start_time else None,
+            material)
+    except ai.AIError as e:
+        return ai_failure(e)
+    record_ai_call()
+    db.session.commit()
+    return jsonify(recap=recap, source="course_documents" if material else "general_knowledge")
 
 
 @app.post("/api/courses")
@@ -514,6 +783,8 @@ def delete_course(course_id):
     course = owned_course_or_404(course_id)
     for d in course.documents:
         (UPLOAD_DIR / d.stored_name).unlink(missing_ok=True)
+    Assessment.query.filter_by(course_id=course.id).update({Assessment.course_id: None})
+    ClassSession.query.filter_by(course_id=course.id).update({ClassSession.course_id: None})
     db.session.delete(course)
     db.session.commit()
     return jsonify(ok=True)
