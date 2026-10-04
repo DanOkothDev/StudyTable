@@ -1,7 +1,7 @@
 import os
 import re
 import uuid
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -52,7 +52,7 @@ EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 def utcnow():
-    return datetime.utcnow()
+    return datetime.now(timezone.utc).replace(tzinfo=None)   # UTC, stored without tzinfo
 
 
 # ---------- Models (tables) ----------

@@ -1,16 +1,15 @@
-"""All Gemini calls live here, so app.py never deals with prompts or the SDK."""
 import json
 import logging
 import os
+import time
 
 from google import genai
 from google.genai import types
 
 log = logging.getLogger("studytable.ai")
 
-# Model names change over time. Set GEMINI_MODEL in .env to any model your key can use
-# (check the list in Google AI Studio).
-MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+
+MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
 
 _client = None
 
@@ -35,17 +34,33 @@ def _call(prompt, system, json_mode):
         temperature=0.4,
         response_mime_type="application/json" if json_mode else None,
     )
-    try:
-        resp = _get_client().models.generate_content(model=MODEL, contents=prompt, config=config)
-        text = (resp.text or "").strip()
-    except AIError:
-        raise
-    except Exception as e:
-        log.exception("Gemini call failed")
-        msg = str(e).lower()
-        if "429" in msg or "quota" in msg or "resource_exhausted" in msg:
-            raise AIError("Gemini's free limit was reached. Try again in a minute.") from e
-        raise AIError("The AI service had a problem. Try again in a moment.") from e
+    text = ""
+    waits = [3, 8]   # seconds to wait before retry 1 and retry 2
+    for attempt in range(3):
+        try:
+            resp = _get_client().models.generate_content(model=MODEL, contents=prompt, config=config)
+            text = (resp.text or "").strip()
+            break
+        except AIError:
+            raise
+        except Exception as e:
+            code = getattr(e, "code", None)
+            status = getattr(e, "status", None) or ""
+            if attempt < 2 and code in (500, 503, 504):   # Google-side hiccup: wait and try again
+                log.warning("Gemini %s %s, retrying in %ss", code, status, waits[attempt])
+                time.sleep(waits[attempt])
+                continue
+            log.exception("Gemini call failed")
+            msg = str(e).lower()
+            if code == 404 or "not_found" in msg:
+                raise AIError(f"The AI model '{MODEL}' isn't available to your key. "
+                              "Set GEMINI_MODEL in .env to a current model from Google AI Studio.") from e
+            if code == 429 or "quota" in msg or "resource_exhausted" in msg:
+                raise AIError("Gemini's free limit was reached. Try again in a minute.") from e
+            if code in (500, 503, 504):
+                raise AIError(f"Gemini is busy right now ({code} {status}). Try again in a minute.") from e
+            raise AIError(f"The AI service had a problem ({code or type(e).__name__} {status}). "
+                          "Try again in a moment.".replace("  ", " ")) from e
     if not text:
         raise AIError("The AI returned an empty answer. Try again.")
     return text
