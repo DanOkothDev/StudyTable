@@ -550,7 +550,15 @@ def delete_flashcard(card_id):
 @login_required
 def ask_ai(doc_id, page_number):
     page = owned_page_or_404(doc_id, page_number)
-    question = str((request.get_json(silent=True) or {}).get("question", "")).strip()
+    data = request.get_json(silent=True) or {}
+    question = str(data.get("question", "")).strip()
+    history = []
+    raw = data.get("history")
+    if isinstance(raw, list):   # earlier turns of this chat, so follow-up questions make sense
+        for h in raw[-6:]:
+            if isinstance(h, dict) and isinstance(h.get("q"), str) and isinstance(h.get("a"), str):
+                pg = h.get("page") if isinstance(h.get("page"), int) else page_number
+                history.append({"q": h["q"][:600], "a": h["a"][:1200], "page": pg})
     if not question or len(question) > 1000:
         return jsonify(error="write a question (max 1000 characters)"), 400
     if not page.text:
@@ -559,7 +567,8 @@ def ask_ai(doc_id, page_number):
     if blocked:
         return blocked
     try:
-        answer = ai.ask(page.document.course.name, page.text[:PAGE_CHAR_LIMIT], question)
+        answer = ai.ask(page.document.course.name, page.text[:PAGE_CHAR_LIMIT], question,
+                        history, page_number)
     except ai.AIError as e:
         return ai_failure(e)
     record_ai_call()

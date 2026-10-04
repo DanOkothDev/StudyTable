@@ -27,8 +27,11 @@ export const api = {
   documents: (courseId) => req(`/courses/${courseId}/documents`),
   view: (docId, page, seconds) =>
     req(`/documents/${docId}/pages/${page}/view`, send("POST", { seconds })),
-  ask: (docId, page, question) =>
-    req(`/documents/${docId}/pages/${page}/ask`, send("POST", { question })),
+  ask: (docId, page, question, history = []) =>
+    req(
+      `/documents/${docId}/pages/${page}/ask`,
+      send("POST", { question, history }),
+    ),
   pending: (courseId) => req(`/courses/${courseId}/pending-pages`),
   generate: (courseId) =>
     req(`/courses/${courseId}/flashcards/generate`, { method: "POST" }),

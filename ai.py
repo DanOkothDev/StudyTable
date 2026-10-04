@@ -1,3 +1,4 @@
+"""All Gemini calls live here, so app.py never deals with prompts or the SDK."""
 import json
 import logging
 import os
@@ -8,7 +9,8 @@ from google.genai import types
 
 log = logging.getLogger("studytable.ai")
 
-
+# Model names change over time. Set GEMINI_MODEL in .env to any model your key can use
+# (check the list in Google AI Studio).
 MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
 
 _client = None
@@ -118,12 +120,18 @@ def generate_flashcards(course_name, pages):
 
 # ---------- Ask the AI about the page you're on ----------
 
-def ask(course_name, page_text, question):
+def ask(course_name, page_text, question, history=None, page_number=None):
     system = ("You are a patient tutor helping a student revise. Use the page text when it is relevant. "
               "If the answer is not on the page, say so, then answer from general knowledge and mark that part "
               "as general knowledge. Keep answers under about 200 words unless asked for more. "
               "Plain text only, no markdown headings. " + SAFETY)
-    prompt = f"Course: {course_name}\n\nPage text:\n{page_text}\n\nStudent question: {question}"
+    convo = ""
+    if history:
+        turns = [f"Student (on page {h['page']}): {h['q']}\nTutor: {h['a']}" for h in history]
+        convo = "Conversation so far:\n" + "\n\n".join(turns) + "\n\n"
+    where = f" (page {page_number})" if page_number else ""
+    prompt = (f"Course: {course_name}\n\n{convo}The student is now reading this page{where}:\n{page_text}"
+              f"\n\nStudent's new message: {question}")
     return _call(prompt, system, json_mode=False)
 
 
