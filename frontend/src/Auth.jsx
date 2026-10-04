@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { api } from "./api";
+import Logo from "./Logo";
 
 const COPY = {
   login: {
@@ -55,7 +56,7 @@ export default function Auth({ onDone }) {
       <div className="sx">
         <aside className="sx-panel">
           <div className="sx-logo">
-            <i />
+            <Logo />
           </div>
           <div className="sx-brand">StudyTable</div>
           <div className="sx-copy" key={mode}>

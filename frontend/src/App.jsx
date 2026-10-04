@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "./api";
+import Logo from "./Logo";
 import Auth from "./Auth";
 import { Years, YearView, SemesterView } from "./Browse";
 import Course from "./Course";
@@ -19,7 +20,7 @@ export default function App() {
   if (user === undefined)
     return (
       <div className="boot">
-        <span />
+        <Logo size={64} alt="StudyTable" />
       </div>
     );
   if (!user) return <Auth onDone={setUser} />;
@@ -40,7 +41,8 @@ export default function App() {
   return (
     <div className={"shell" + (reading ? " wide" : "")}>
       <header className="bar">
-        <button className="mark" onClick={() => setNav({})}>
+        <button className="mark logo" onClick={() => setNav({})}>
+          <Logo size={30} />
           StudyTable
         </button>
         <button className="avatar" onClick={logout} aria-label="Log out">

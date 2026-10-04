@@ -228,7 +228,7 @@ button.doc:hover { transform: translateY(-2px); border-color: var(--blue); }
 .sx-panel::after { width: 240px; height: 240px; left: -90px; bottom: -80px; opacity: .4; animation-delay: -6s; }
 @keyframes drift { to { transform: translate(-16px, 18px); } }
 .sx-panel > * { position: relative; z-index: 1; }
-.sx-logo { width: 60px; height: 60px; display: grid; place-items: center; border-radius: 50%; background: #fff; }
+.sx-logo { width: 176px; height: 99px; padding: 12px; border-radius: 22px; background: #fff; }
 .sx-logo i { width: 24px; height: 24px; border-radius: 6px; background: var(--mark); transform: rotate(-8deg); }
 .sx-brand { font-weight: 700; font-size: 1.05rem; }
 .sx-copy { margin-top: 24px; animation: enter .5s var(--ease); }
@@ -259,3 +259,13 @@ button.doc:hover { transform: translateY(-2px); border-color: var(--blue); }
   .sx-form { padding: 28px 26px 34px; }
   .sx-head h1 { font-size: 2rem; }
 }
+
+/* logo */
+.mark.logo { gap: 10px; }
+.mark.logo::before { display: none; }
+.boot img { animation: breathe 1.6s ease-in-out infinite alternate; }
+@keyframes breathe { from { transform: scale(.92); opacity: .7; } to { transform: scale(1.04); opacity: 1; } }
+
+.logo-img { display: block; }
+.sx-logo .logo-img { width: 100%; height: 100%; object-fit: contain; }
+@media (max-width: 760px) { .sx-logo { width: 114px; height: 56px; padding: 3px; border-radius: 10px; } }
