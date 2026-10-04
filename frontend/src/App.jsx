@@ -1,14 +1,13 @@
 import { useEffect, useState } from "react";
 import { api } from "./api";
 import Auth from "./Auth";
-import Dashboard from "./Dashboard";
+import { Years, YearView, SemesterView } from "./Browse";
 import Course from "./Course";
 import Reader from "./Reader";
 
 export default function App() {
   const [user, setUser] = useState(undefined); // undefined = still checking the cookie
-  const [course, setCourse] = useState(null);
-  const [doc, setDoc] = useState(null);
+  const [nav, setNav] = useState({}); // { year, sem, course, doc }, as deep as you have gone
 
   useEffect(() => {
     api
@@ -28,19 +27,20 @@ export default function App() {
   async function logout() {
     await api.logout();
     setUser(null);
-    setCourse(null);
-    setDoc(null);
+    setNav({});
   }
-  const home = () => {
-    setCourse(null);
-    setDoc(null);
-  };
+
+  const { year, sem, course, doc } = nav;
   const reading = course && doc;
+  const crumbs = [];
+  if (year) crumbs.push([`Year ${year.number}`, { year }]);
+  if (sem) crumbs.push([`Semester ${sem.number}`, { year, sem }]);
+  if (course) crumbs.push([course.name, { year, sem, course }]);
 
   return (
     <div className={"shell" + (reading ? " wide" : "")}>
       <header className="bar">
-        <button className="mark" onClick={home}>
+        <button className="mark" onClick={() => setNav({})}>
           StudyTable
         </button>
         <button className="avatar" onClick={logout} aria-label="Log out">
@@ -48,16 +48,49 @@ export default function App() {
           <span className="out">Log out</span>
         </button>
       </header>
+      {!reading && crumbs.length > 0 && (
+        <nav className="crumbs" aria-label="Breadcrumb">
+          <button onClick={() => setNav({})}>Home</button>
+          {crumbs.map(([label, to], i) => (
+            <span key={i}>
+              <span className="sep">/</span>
+              {i < crumbs.length - 1 ? (
+                <button onClick={() => setNav(to)}>{label}</button>
+              ) : (
+                <span className="here">{label}</span>
+              )}
+            </span>
+          ))}
+        </nav>
+      )}
       <main
         className="page"
-        key={reading ? "d" + doc.id : course ? "c" + course.id : "home"}
+        key={[year?.id, sem?.id, course?.id, doc?.id].join("-")}
       >
         {reading ? (
-          <Reader course={course} doc={doc} onBack={() => setDoc(null)} />
+          <Reader
+            course={course}
+            doc={doc}
+            onBack={() => setNav({ year, sem, course })}
+          />
         ) : course ? (
-          <Course course={course} onBack={home} onOpenDoc={setDoc} />
+          <Course
+            course={course}
+            year={year}
+            sem={sem}
+            onBack={() => setNav({ year, sem })}
+            onOpenDoc={(d) => setNav({ year, sem, course, doc: d })}
+            onMoved={(y, s) => setNav({ year: y, sem: s, course })}
+          />
+        ) : sem ? (
+          <SemesterView
+            sem={sem}
+            onOpen={(c) => setNav({ year, sem, course: c })}
+          />
+        ) : year ? (
+          <YearView year={year} onOpen={(s) => setNav({ year, sem: s })} />
         ) : (
-          <Dashboard onOpen={setCourse} />
+          <Years onOpen={(y) => setNav({ year: y })} />
         )}
       </main>
     </div>

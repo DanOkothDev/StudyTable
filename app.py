@@ -81,9 +81,27 @@ class User(UserMixin, db.Model):
     courses = db.relationship("Course", backref="user", cascade="all, delete-orphan")
 
 
+class Year(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+    number = db.Column(db.Integer, nullable=False)              # 1 = Year 1
+    semesters = db.relationship("Semester", backref="year", cascade="all, delete-orphan",
+                                order_by="Semester.number")
+    __table_args__ = (db.UniqueConstraint("user_id", "number"),)
+
+
+class Semester(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    year_id = db.Column(db.Integer, db.ForeignKey("year.id"), nullable=False)
+    number = db.Column(db.Integer, nullable=False)              # 1 or 2
+    courses = db.relationship("Course", backref="semester")     # a unit is a Course
+    __table_args__ = (db.UniqueConstraint("year_id", "number"),)
+
+
 class Course(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+    semester_id = db.Column(db.Integer, db.ForeignKey("semester.id"), nullable=True)
     name = db.Column(db.String(120), nullable=False)
     documents = db.relationship("Document", backref="course", cascade="all, delete-orphan")
     cats = db.relationship("Cat", backref="course", cascade="all, delete-orphan")
@@ -192,6 +210,35 @@ def owned_course_or_404(course_id):
     return Course.query.filter_by(id=course_id, user_id=current_user.id).first_or_404()
 
 
+def owned_semester_or_404(semester_id):
+    return (Semester.query.join(Year)
+            .filter(Semester.id == semester_id, Year.user_id == current_user.id).first_or_404())
+
+
+def new_year(number):
+    year = Year(user_id=current_user.id, number=number)
+    year.semesters = [Semester(number=1), Semester(number=2)]
+    db.session.add(year)
+    return year
+
+
+def adopt_orphans():
+    """Units made before years existed (no semester yet) are filed under Year 2, Semester 1."""
+    orphans = Course.query.filter_by(user_id=current_user.id, semester_id=None).all()
+    if not orphans:
+        return
+    year = Year.query.filter_by(user_id=current_user.id, number=2).first() or new_year(2)
+    sem = next(s for s in year.semesters if s.number == 1)
+    for c in orphans:
+        c.semester = sem
+    db.session.commit()
+
+
+def year_json(y):
+    return {"id": y.id, "number": y.number,
+            "semesters": [{"id": s.id, "number": s.number, "unit_count": len(s.courses)} for s in y.semesters]}
+
+
 def owned_document_or_404(doc_id):
     return (Document.query.join(Course)
             .filter(Document.id == doc_id, Course.user_id == current_user.id).first_or_404())
@@ -246,7 +293,9 @@ def ai_usage():
 # ---------- JSON helpers ----------
 
 def doc_json(d):
-    return {"id": d.id, "course_id": d.course_id, "filename": d.filename, "page_count": d.page_count}
+    scanned = Page.query.filter_by(document_id=d.id, text="").count()   # pages with no readable text
+    return {"id": d.id, "course_id": d.course_id, "filename": d.filename,
+            "page_count": d.page_count, "empty_pages": scanned}
 
 
 def card_json(c):
@@ -335,18 +384,72 @@ def list_courses():
     return jsonify([{"id": c.id, "name": c.name, "document_count": len(c.documents)} for c in courses])
 
 
+@app.get("/api/years")
+@login_required
+def list_years():
+    adopt_orphans()
+    years = Year.query.filter_by(user_id=current_user.id).order_by(Year.number).all()
+    return jsonify([year_json(y) for y in years])
+
+
+@app.post("/api/years")
+@login_required
+def create_year():
+    taken = [y.number for y in Year.query.filter_by(user_id=current_user.id)]
+    number = (request.get_json(silent=True) or {}).get("number")
+    if number is None:
+        number = max(taken, default=0) + 1
+    if not isinstance(number, int) or isinstance(number, bool) or not 1 <= number <= 8:
+        return jsonify(error="year must be a number from 1 to 8"), 400
+    if number in taken:
+        return jsonify(error=f"Year {number} already exists"), 409
+    year = new_year(number)
+    db.session.commit()
+    return jsonify(year_json(year)), 201
+
+
+@app.get("/api/semesters/<int:semester_id>")
+@login_required
+def get_semester(semester_id):
+    sem = owned_semester_or_404(semester_id)
+    units = sorted(sem.courses, key=lambda c: c.name.lower())
+    return jsonify(id=sem.id, number=sem.number, year={"id": sem.year.id, "number": sem.year.number},
+                   courses=[{"id": c.id, "name": c.name, "document_count": len(c.documents)} for c in units])
+
+
 @app.post("/api/courses")
 @login_required
 def create_course():
-    name = str((request.get_json(silent=True) or {}).get("name", "")).strip()
+    data = request.get_json(silent=True) or {}
+    name = str(data.get("name", "")).strip()
     if not name or len(name) > 120:
         return jsonify(error="name is required (max 120 characters)"), 400
+    sem = None
+    if data.get("semester_id") is not None:
+        sid = data["semester_id"]
+        if not isinstance(sid, int) or isinstance(sid, bool):
+            return jsonify(error="semester_id must be a number"), 400
+        sem = owned_semester_or_404(sid)
     if Course.query.filter_by(user_id=current_user.id, name=name).first():
-        return jsonify(error="you already have a course with that name"), 409
-    course = Course(user_id=current_user.id, name=name)
+        return jsonify(error="you already have a unit with that name"), 409
+    course = Course(user_id=current_user.id, name=name, semester_id=sem.id if sem else None)
     db.session.add(course)
     db.session.commit()
     return jsonify(id=course.id, name=course.name), 201
+
+
+@app.patch("/api/courses/<int:course_id>")
+@login_required
+def move_course(course_id):
+    """Move a unit to another semester."""
+    course = owned_course_or_404(course_id)
+    sid = (request.get_json(silent=True) or {}).get("semester_id")
+    if not isinstance(sid, int) or isinstance(sid, bool):
+        return jsonify(error="semester_id must be a number"), 400
+    sem = owned_semester_or_404(sid)
+    course.semester_id = sem.id
+    db.session.commit()
+    return jsonify(id=course.id, name=course.name, semester_id=sem.id)
 
 
 @app.delete("/api/courses/<int:course_id>")
@@ -391,8 +494,7 @@ def upload_document(course_id):
     doc.pages = [Page(page_number=i, text=t) for i, t in enumerate(texts, start=1)]
     db.session.add(doc)
     db.session.commit()
-    empty = sum(1 for t in texts if not t)
-    return jsonify(**doc_json(doc), empty_pages=empty), 201
+    return jsonify(doc_json(doc)), 201
 
 
 @app.get("/api/documents/<int:doc_id>/file")
@@ -561,8 +663,6 @@ def ask_ai(doc_id, page_number):
                 history.append({"q": h["q"][:600], "a": h["a"][:1200], "page": pg})
     if not question or len(question) > 1000:
         return jsonify(error="write a question (max 1000 characters)"), 400
-    if not page.text:
-        return jsonify(error="this page has no readable text (it may be a scan)"), 400
     blocked = quota_block()
     if blocked:
         return blocked

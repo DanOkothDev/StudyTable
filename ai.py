@@ -130,8 +130,12 @@ def ask(course_name, page_text, question, history=None, page_number=None):
         turns = [f"Student (on page {h['page']}): {h['q']}\nTutor: {h['a']}" for h in history]
         convo = "Conversation so far:\n" + "\n\n".join(turns) + "\n\n"
     where = f" (page {page_number})" if page_number else ""
-    prompt = (f"Course: {course_name}\n\n{convo}The student is now reading this page{where}:\n{page_text}"
-              f"\n\nStudent's new message: {question}")
+    if page_text.strip():
+        page_part = f"The student is now reading this page{where}:\n{page_text}"
+    else:
+        page_part = (f"The student is reading a page{where} of a scanned file. You cannot see its content. "
+                     "Say so briefly if it matters, then answer from general knowledge about the course topic.")
+    prompt = f"Course: {course_name}\n\n{convo}{page_part}\n\nStudent's new message: {question}"
     return _call(prompt, system, json_mode=False)
 
 

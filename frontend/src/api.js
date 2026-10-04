@@ -47,6 +47,14 @@ export const api = {
   submitCat: (id, answers) =>
     req(`/cats/${id}/submit`, send("POST", { answers })),
   deleteCat: (id) => req(`/cats/${id}`, { method: "DELETE" }),
+  years: () => req("/years"),
+  createYear: (number) => req("/years", send("POST", number ? { number } : {})),
+  semester: (id) => req(`/semesters/${id}`),
+  createUnit: (semesterId, name) =>
+    req("/courses", send("POST", { name, semester_id: semesterId })),
+  moveCourse: (id, semesterId) =>
+    req(`/courses/${id}`, send("PATCH", { semester_id: semesterId })),
+  deleteDocument: (id) => req(`/documents/${id}`, { method: "DELETE" }),
   upload: (courseId, file) => {
     const form = new FormData();
     form.append("file", file);

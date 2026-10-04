@@ -3,12 +3,21 @@ import { api } from "./api";
 import Cats from "./Cats";
 import CatRun from "./CatRun";
 
-export default function Course({ course, onBack, onOpenDoc }) {
+export default function Course({
+  course,
+  year,
+  sem,
+  onBack,
+  onOpenDoc,
+  onMoved,
+}) {
   const [docs, setDocs] = useState(null);
   const [queue, setQueue] = useState([]);
   const [over, setOver] = useState(false);
   const [tab, setTab] = useState("files");
   const [catId, setCatId] = useState(null);
+  const [years, setYears] = useState([]);
+  const [confirm, setConfirm] = useState(null);
 
   useEffect(() => {
     api
@@ -16,6 +25,41 @@ export default function Course({ course, onBack, onOpenDoc }) {
       .then(setDocs)
       .catch(() => setDocs([]));
   }, [course.id]);
+
+  useEffect(() => {
+    api
+      .years()
+      .then(setYears)
+      .catch(() => {});
+  }, []);
+
+  async function move(e) {
+    const id = +e.target.value;
+    try {
+      await api.moveCourse(course.id, id);
+    } catch {
+      return;
+    }
+    for (const y of years) {
+      const s = y.semesters.find((x) => x.id === id);
+      if (s)
+        return onMoved(
+          { id: y.id, number: y.number },
+          { id: s.id, number: s.number },
+        );
+    }
+  }
+
+  function removeDoc(id) {
+    if (confirm !== id) {
+      setConfirm(id);
+      setTimeout(() => setConfirm((c) => (c === id ? null : c)), 3000);
+      return;
+    }
+    api.deleteDocument(id).catch(() => {});
+    setDocs((d) => d.filter((x) => x.id !== id));
+    setConfirm(null);
+  }
 
   async function addFiles(files) {
     const pdfs = [...files].filter((f) =>
@@ -55,12 +99,28 @@ export default function Course({ course, onBack, onOpenDoc }) {
         >
           <path d="M10 3 5 8l5 5" />
         </svg>
-        Courses
+        Semester {sem.number}
       </button>
       <h1>{course.name}</h1>
-      <p className="sub">
-        {docs ? `${count} ${count === 1 ? "file" : "files"}` : "\u00A0"}
-      </p>
+      <div className="sub row">
+        <span>
+          {docs ? `${count} ${count === 1 ? "file" : "files"}` : "\u00A0"}
+        </span>
+        <select
+          className="pill"
+          aria-label="Move this unit to another semester"
+          value={sem.id}
+          onChange={move}
+        >
+          {years.flatMap((y) =>
+            y.semesters.map((s) => (
+              <option key={s.id} value={s.id}>
+                Year {y.number}, Semester {s.number}
+              </option>
+            )),
+          )}
+        </select>
+      </div>
 
       <div className="ctabs" role="tablist">
         <button
@@ -118,14 +178,28 @@ export default function Course({ course, onBack, onOpenDoc }) {
               </li>
             ))}
             {(docs || []).map((d) => (
-              <li key={d.id}>
+              <li className="row" key={d.id}>
                 <button className="doc open" onClick={() => onOpenDoc(d)}>
                   <span className="ico" />
                   <span className="nm">{d.filename}</span>
                   <span className="meta">
                     {d.page_count} pages
-                    {d.empty_pages ? `, ${d.empty_pages} without text` : ""}
+                    {d.empty_pages === d.page_count
+                      ? ", scanned"
+                      : d.empty_pages
+                        ? `, ${d.empty_pages} scanned`
+                        : ""}
                   </span>
+                </button>
+                <button
+                  className="del"
+                  onClick={() => removeDoc(d.id)}
+                  aria-label="Delete file"
+                  title={
+                    confirm === d.id ? "Also deletes its flashcards" : undefined
+                  }
+                >
+                  {confirm === d.id ? "Sure?" : "×"}
                 </button>
               </li>
             ))}

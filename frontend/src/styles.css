@@ -206,3 +206,15 @@ button.doc:hover { transform: translateY(-2px); border-color: var(--blue); }
 .ropt.no small { color: var(--err); }
 .why { margin: 4px 0 0; padding: 12px 14px; background: var(--paper); border-radius: 14px; color: #3c4563; font-size: .94rem; }
 @media (max-width: 560px) { .result { flex-direction: column; align-items: flex-start; } }
+
+/* years, semesters, move, scanned */
+.crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; margin: -16px 0 22px; font-size: .9rem; color: var(--muted); }
+.crumbs button { padding: 2px 6px; border-radius: 8px; color: var(--muted); transition: color .2s, background .2s; }
+.crumbs button:hover { color: var(--ink); background: rgba(19, 26, 46, .06); }
+.crumbs .sep { opacity: .45; margin-right: 2px; }
+.crumbs .here { color: var(--ink); font-weight: 500; padding: 2px 6px; }
+.sub.row { display: flex; align-items: center; flex-wrap: wrap; gap: 14px; }
+.pill { padding: 7px 34px 7px 14px; border: 1.5px solid var(--line); border-radius: 999px; background: #fff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none' stroke='%236b7390' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m3 4.5 3 3 3-3'/%3E%3C/svg%3E") no-repeat right 12px center; appearance: none; color: var(--ink); font-size: .9rem; font-weight: 500; cursor: pointer; transition: border-color .2s; }
+.pill:hover { border-color: var(--blue); }
+.scan-note { margin: 0 0 10px; padding: 9px 14px; background: #fff3c4; border-radius: 12px; font-size: .88rem; animation: enter .4s var(--ease); }
+.folder.new.open .chips { margin-top: 6px; }
