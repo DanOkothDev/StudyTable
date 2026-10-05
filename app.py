@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import threading
@@ -179,8 +180,23 @@ class User(UserMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
     email = db.Column(db.String(255), unique=True, nullable=False)
     password_hash = db.Column(db.String(255), nullable=False)
+    school = db.Column(db.String(160), nullable=True)
+    program = db.Column(db.String(160), nullable=True)
+    year_of_study = db.Column(db.Integer, nullable=True)
+    interests = db.Column(db.String(500), nullable=True)
     courses = db.relationship("Course", backref="user", cascade="all, delete-orphan")
+    daily_insights = db.relationship("DailyInsight", backref="user", cascade="all, delete-orphan")
     __table_args__ = (db.Index("ix_user_email", "email"),)
+
+
+class DailyInsight(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+    day = db.Column(db.Date, nullable=False)
+    content = db.Column(db.Text, nullable=False)
+    sources = db.Column(db.Text, nullable=False)
+    __table_args__ = (db.UniqueConstraint("user_id", "day"),
+                      db.Index("ix_daily_insight_user_day", "user_id", "day"))
 
 
 class Year(db.Model):
@@ -570,6 +586,83 @@ def logout():
 @login_required
 def me():
     return jsonify(id=current_user.id, email=current_user.email)
+
+
+def profile_json(user):
+    return {"email": user.email, "school": user.school or "", "program": user.program or "",
+            "year_of_study": user.year_of_study, "interests": user.interests or ""}
+
+
+@app.get("/api/profile")
+@login_required
+def get_profile():
+    return jsonify(profile_json(current_user))
+
+
+@app.put("/api/profile")
+@login_required
+def update_profile():
+    data = request.get_json(silent=True) or {}
+    school = data.get("school")
+    program = data.get("program")
+    interests = data.get("interests", "")
+    year = data.get("year_of_study")
+    if not isinstance(school, str) or not school.strip() or len(school.strip()) > 160:
+        return jsonify(error="enter your school or university (max 160 characters)"), 400
+    if not isinstance(program, str) or not program.strip() or len(program.strip()) > 160:
+        return jsonify(error="enter your course or program (max 160 characters)"), 400
+    if not isinstance(interests, str) or len(interests.strip()) > 500:
+        return jsonify(error="interests must be at most 500 characters"), 400
+    if year in ("", None):
+        year = None
+    elif not isinstance(year, int) or isinstance(year, bool) or not 1 <= year <= 12:
+        return jsonify(error="year of study must be a number from 1 to 12"), 400
+
+    changed = (
+        current_user.school != school.strip()
+        or current_user.program != program.strip()
+        or current_user.year_of_study != year
+        or current_user.interests != (interests.strip() or None)
+    )
+    current_user.school = school.strip()
+    current_user.program = program.strip()
+    current_user.year_of_study = year
+    current_user.interests = interests.strip() or None
+    if changed:
+        DailyInsight.query.filter_by(user_id=current_user.id, day=utcnow().date()).delete()
+    db.session.commit()
+    return jsonify(profile_json(current_user))
+
+
+@app.get("/api/insights/today")
+@login_required
+def get_daily_insight():
+    if not current_user.school or not current_user.program:
+        return jsonify(error="complete your school and course details to get a personalized insight"), 400
+    today = utcnow().date()
+    insight = DailyInsight.query.filter_by(user_id=current_user.id, day=today).first()
+    if insight is not None:
+        return jsonify(content=insight.content, sources=json.loads(insight.sources),
+                       generated_for=insight.day.isoformat(), cached=True)
+
+    blocked = quota_block()
+    if blocked:
+        return blocked
+    try:
+        result = ai.generate_daily_insight(profile_json(current_user), today.isoformat())
+    except ai.AIError as e:
+        return ai_failure(e)
+    insight = DailyInsight(
+        user_id=current_user.id,
+        day=today,
+        content=result["content"],
+        sources=json.dumps(result["sources"], ensure_ascii=False),
+    )
+    db.session.add(insight)
+    record_ai_call()
+    db.session.commit()
+    return jsonify(content=insight.content, sources=result["sources"],
+                   generated_for=insight.day.isoformat(), cached=False)
 
 
 # ---------- Courses ----------

@@ -32,11 +32,12 @@ def _get_client():
     return _client
 
 
-def _call(prompt, system, json_mode):
+def _call(prompt, system, json_mode, tools=None, include_response=False):
     config = types.GenerateContentConfig(
         system_instruction=system,
         temperature=0.4,
         response_mime_type="application/json" if json_mode else None,
+        tools=tools,
     )
     text = ""
     waits = [3, 8]   # seconds to wait before retry 1 and retry 2
@@ -67,7 +68,7 @@ def _call(prompt, system, json_mode):
                           "Try again in a moment.".replace("  ", " ")) from e
     if not text:
         raise AIError("The AI returned an empty answer. Try again.")
-    return text
+    return resp if include_response else text
 
 
 def _parse_json(text):
@@ -396,3 +397,53 @@ def generate_exam_study_plan(exams, units):
         f"Exams:\n{exam_text}\n\nUnits, understanding levels, and available course material:\n{unit_text}"
     )
     return _call(prompt, system, json_mode=False)
+
+
+def generate_daily_insight(profile, today):
+    """Generate one current, source-grounded career insight for a student's course."""
+    system = (
+        "You are a practical technology and career research mentor for university students. "
+        "Use live Google Search results to identify what is changing now, prioritize reliable "
+        "and recent sources, distinguish established facts from forecasts, and avoid hype. "
+        "Give advice relevant to the student's specific program and region."
+    )
+    prompt = (
+        f"Today's date: {today}\n"
+        f"School: {profile['school']}\n"
+        f"Program/course: {profile['program']}\n"
+        f"Year of study: {profile.get('year_of_study') or 'not specified'}\n"
+        f"Interests: {profile.get('interests') or 'not specified'}\n\n"
+        "Research current developments relevant to this student's course, including emerging "
+        "technology, skills employers are seeking, and practical ways a student can stay "
+        "competitive. Select one especially useful, specific insight for today rather than "
+        "writing a generic list. Prefer primary sources, reputable technical publications, "
+        "standards bodies, or credible industry reports from the last 12 months when available. "
+        "Clearly state why it matters to this student, suggest one concrete action they can "
+        "take this week, and mention uncertainty or limitations where relevant. Keep the answer "
+        "focused and readable, around 250-400 words. Cite factual claims using the searched "
+        "sources; do not fabricate statistics, organizations, dates, or URLs."
+    )
+    response = _call(
+        prompt,
+        system,
+        json_mode=False,
+        tools=[types.Tool(google_search=types.GoogleSearch())],
+        include_response=True,
+    )
+    candidate = next(iter(response.candidates or []), None)
+    metadata = getattr(candidate, "grounding_metadata", None)
+    chunks = getattr(metadata, "grounding_chunks", None) or []
+    sources = []
+    seen = set()
+    for chunk in chunks:
+        web = getattr(chunk, "web", None)
+        uri = getattr(web, "uri", None)
+        title = getattr(web, "title", None)
+        if (isinstance(uri, str) and uri.startswith(("https://", "http://"))
+                and uri not in seen):
+            seen.add(uri)
+            sources.append({"title": title if isinstance(title, str) and title else uri,
+                            "url": uri})
+    if not sources:
+        raise AIError("Gemini couldn't provide verified source links for today's insight. Try again.")
+    return {"content": (response.text or "").strip(), "sources": sources[:8]}

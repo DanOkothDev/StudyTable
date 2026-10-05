@@ -12,6 +12,7 @@ import {
 import Course from "./Course";
 import Reader from "./Reader";
 import Recap from "./Recap";
+import Profile from "./Profile";
 
 export default function App() {
   const [user, setUser] = useState(undefined); // undefined = still checking the cookie
@@ -38,9 +39,10 @@ export default function App() {
     setNav({});
   }
 
-  const { year, sem, course, doc, recap } = nav;
+  const { year, sem, course, doc, recap, profile } = nav;
   const reading = course && doc;
   const crumbs = [];
+  if (profile) crumbs.push(["Profile", { profile: true }]);
   if (year) crumbs.push([`Year ${year.number}`, { year }]);
   if (sem) crumbs.push([`Semester ${sem.number}`, { year, sem }]);
   if (course) crumbs.push([course.name, { year, sem, course }]);
@@ -53,9 +55,9 @@ export default function App() {
           <Logo size={30} />
           StudyTable
         </button>
-        <button className="avatar" onClick={logout} aria-label="Log out">
+        <button className="avatar" onClick={() => setNav({ profile: true })} aria-label="Open profile">
           <span className="initial">{user.email[0].toUpperCase()}</span>
-          <span className="out">Log out</span>
+          <span className="out">Profile</span>
         </button>
       </header>
       {!reading && crumbs.length > 0 && (
@@ -75,9 +77,11 @@ export default function App() {
       )}
       <main
         className="page"
-        key={[year?.id, sem?.id, course?.id, doc?.id, recap?.id].join("-")}
+        key={[year?.id, sem?.id, course?.id, doc?.id, recap?.id, profile ? "profile" : ""].join("-")}
       >
-        {reading ? (
+        {profile ? (
+          <Profile email={user.email} onBack={() => setNav({})} onLogout={logout} />
+        ) : reading ? (
           <Reader
             course={course}
             doc={doc}

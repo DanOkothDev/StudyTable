@@ -22,6 +22,9 @@ export const api = {
   login: (email, password) =>
     req("/auth/login", send("POST", { email, password })),
   logout: () => req("/auth/logout", { method: "POST" }),
+  profile: () => req("/profile"),
+  saveProfile: (profile) => req("/profile", send("PUT", profile)),
+  todayInsight: () => req("/insights/today"),
   courses: () => req("/courses"),
   createCourse: (name) => req("/courses", send("POST", { name })),
   documents: (courseId) => req(`/courses/${courseId}/documents`),
