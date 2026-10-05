@@ -233,18 +233,45 @@ button.doc:hover { transform: translateY(-2px); border-color: var(--blue); }
 .timetable-upload { position: relative; flex: none; padding: 10px 16px; border-radius: 999px; background: var(--ink); color: #fff; cursor: pointer; font-size: .9rem; font-weight: 600; }
 .timetable-upload:hover { background: var(--blue); }
 .timetable-upload input { position: absolute; width: 1px; height: 1px; opacity: 0; }
-.assessment-list { list-style: none; margin: 0 0 28px; padding: 0; display: grid; gap: 8px; }
-.assessment-list li { display: grid; grid-template-columns: 180px minmax(120px, 1fr) 1fr; align-items: center; gap: 12px; padding: 12px 16px; background: #fff; border: 1px solid var(--line); border-radius: 14px; }
-.assessment-list time, .assessment-list li span, .recap-source { color: var(--muted); font-size: .9rem; }
+.class-schedule { margin: 0 0 28px; padding: 18px 22px; border: 1px solid var(--line); border-radius: 18px; background: #fff; }
+.class-schedule > h2, .exam-panel h2 { margin: 0; font-size: 1.18rem; font-weight: 600; }
+.class-day { display: grid; grid-template-columns: 126px minmax(0, 1fr); gap: 18px; padding: 13px 0; border-top: 1px solid var(--line); }
+.class-day:first-of-type { margin-top: 12px; }
+.class-day h3 { margin: 0; font-size: .94rem; font-weight: 600; }
+.class-day-sessions { display: grid; gap: 7px; }
+.class-session { display: grid; grid-template-columns: 128px minmax(130px, 1fr) minmax(100px, 1fr); align-items: baseline; gap: 14px; }
+.class-session time, .class-session span, .recap-source { color: var(--muted); font-size: .9rem; }
 .assessment-empty { margin: 0 0 28px; color: var(--muted); font-size: .92rem; }
+.exam-panel { margin: 0 0 30px; padding: 22px 24px; border: 1px solid var(--line); border-radius: 20px; background: #fff; }
+.exam-panel-head { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+.exam-panel-head p { margin: 5px 0 0; color: var(--muted); font-size: .92rem; overflow-wrap: anywhere; }
+.exam-list { list-style: none; margin: 18px 0 0; padding: 0; border-top: 1px solid var(--line); }
+.exam-list li { display: grid; grid-template-columns: 190px minmax(0, 1fr) 80px; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.exam-list time, .exam-list li span { color: var(--muted); font-size: .9rem; }
+.exam-list strong { font-weight: 600; }
+.understanding { display: grid; gap: 16px; margin-top: 22px; }
+.understanding h3, .study-plan h3 { margin: 0 0 4px; font-size: 1rem; font-weight: 600; }
+.understanding p { margin: 0; color: var(--muted); font-size: .9rem; }
+.understanding-list { display: grid; gap: 8px; }
+.understanding-row { display: grid; grid-template-columns: minmax(140px, 1fr) minmax(240px, 1.2fr); align-items: center; gap: 16px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.understanding-row .pill { justify-self: stretch; min-width: 0; }
+.primary:disabled { opacity: .55; cursor: not-allowed; }
+.study-plan { margin-top: 22px; padding: 18px 20px; border-radius: 16px; background: var(--paper); }
+.study-plan > div { color: #303954; line-height: 1.75; white-space: pre-wrap; }
+.study-plan .recap-source { margin: 10px 0 14px; }
 .recap { max-width: 760px; padding: 24px; border: 1px solid var(--line); border-radius: 22px; background: #fff; }
 .recap-source { margin: 0 0 22px; }
 .recap-content { color: #303954; line-height: 1.75; white-space: pre-wrap; }
 .recap-retry { margin-top: 8px; }
 @media (max-width: 560px) {
   .timetable { align-items: flex-start; flex-direction: column; }
-  .assessment-list li { grid-template-columns: 1fr 1fr; }
-  .assessment-list time { grid-column: 1 / -1; }
+  .exam-panel-head { align-items: flex-start; flex-direction: column; }
+  .exam-list li { grid-template-columns: 1fr auto; }
+  .exam-list strong { grid-column: 1 / -1; grid-row: 2; }
+  .understanding-row { grid-template-columns: 1fr; gap: 7px; }
+  .class-day { grid-template-columns: 1fr; gap: 8px; }
+  .class-session { grid-template-columns: 1fr 1fr; gap: 2px 12px; }
+  .class-session span { grid-column: 2; }
 }
 
 /* login and sign-up */

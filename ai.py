@@ -4,6 +4,7 @@ import logging
 import os
 import re
 import time
+from datetime import date
 
 from google import genai
 from google.genai import types
@@ -256,11 +257,19 @@ def extract_classes(course_names, timetable_text):
         "Reply with a class for every identifiable course-labelled grid entry; do not require "
         "assessment dates or class-type words. Do not invent classes. Return an empty list only "
         "if no course-labelled weekly class entries can be read.\n"
-        "The extracted text may include x/y coordinates. The hour-heading x values identify "
-        "the horizontal time columns; assign each class fragment to the nearest hour heading "
-        "by its x position. Fragments with nearby x positions in one weekday row may be wrapped "
-        "lines of the same class; join continuations. If a fragment contains two course codes, "
-        "extract both classes. Ignore instructor lists outside the weekday rows.\n"
+        "The extracted text includes x/y coordinates and the center x coordinate of each hourly "
+        "header. Use the class label's x position relative to those header centers to identify "
+        "the occupied timetable cell(s), not just the nearest single column. A label centered "
+        "on a header center occupies that one-hour interval. A label centered halfway between "
+        "two adjacent header centers is in a merged cell spanning both intervals: start at the "
+        "first interval's start and end at the second interval's end. Apply the same rule to "
+        "longer merged cells using their span and midpoint. Do not default every class to one "
+        "hour when its cell spans multiple columns. For example, if 09:00-10:00 and "
+        "10:00-11:00 are adjacent columns, a class centered between their centers runs "
+        "09:00-11:00, while one centered on the first column runs 09:00-10:00. Fragments with "
+        "nearby x positions in one weekday row may be wrapped lines of the same class; join "
+        "continuations. If a fragment contains two course codes, extract both classes. Ignore "
+        "instructor lists outside the weekday rows.\n"
         'Reply as: {"classes":[{"course_name":"...","title":"...","weekday":0,'
         '"start_time":"09:00","end_time":"10:00"}]}\n\n'
         "Timetable text:\n" + timetable_text
@@ -292,6 +301,51 @@ def extract_classes(course_names, timetable_text):
     return out
 
 
+def extract_exams(course_names, timetable_text, today):
+    """Extract dated semester exams from a timetable."""
+    system = ("You extract university exam entries from a student's exam timetable. "
+              + SAFETY + " Reply with JSON only.")
+    prompt = (
+        f"Course/unit names in this semester: {json.dumps(course_names, ensure_ascii=False)}\n"
+        f"Today's date is {today}.\n\n"
+        "Extract every dated exam belonging to a listed unit. Match codes and abbreviations "
+        "to the supplied unit names when possible, and return the exact supplied unit name "
+        "when matched. Use the actual calendar date as YYYY-MM-DD; "
+        "if the timetable omits the year, infer the year from the semester context and today's "
+        "date, choosing the upcoming occurrence where unambiguous. Do not invent dates or exams. "
+        "Use a concise exam title and include a 24-hour start time only when shown; otherwise "
+        "use null. Ignore venue-only entries and non-exam events.\n"
+        'Reply as: {"exams":[{"course_name":"...","title":"Final exam",'
+        '"date":"YYYY-MM-DD","start_time":"09:00"}]}\n\n'
+        "Exam timetable text:\n" + timetable_text
+    )
+    data = _parse_json(_call(prompt, system, json_mode=True))
+    if not isinstance(data, dict) or not isinstance(data.get("exams"), list):
+        raise AIError("The AI couldn't read exam dates from this timetable. Try again.")
+
+    out = []
+    for item in data["exams"][:200]:
+        if not isinstance(item, dict):
+            continue
+        name = _clean(item.get("course_name") or item.get("course"), 120)
+        title = _clean(item.get("title"), 160) or "Exam"
+        exam_date = item.get("date")
+        if not isinstance(exam_date, str):
+            continue
+        try:
+            parsed_date = date.fromisoformat(exam_date.strip())
+        except ValueError:
+            continue
+        if parsed_date.isoformat() != exam_date.strip():
+            continue
+        start_time = _class_time(item.get("start_time"))
+        if start_time is False or not name:
+            continue
+        out.append({"course_name": name, "title": title, "date": parsed_date.isoformat(),
+                    "start_time": start_time})
+    return out
+
+
 def generate_class_recap(course_name, class_title, start_time, material):
     source = (
         "Use the supplied course notes as the primary source. Prepare the student for the "
@@ -313,5 +367,32 @@ def generate_class_recap(course_name, class_title, start_time, material):
         f"Course: {course_name}\nClass: {class_title}\n"
         f"Class time: {start_time or 'not listed'}\n\n{source}\n\n"
         + (f"Course notes:\n{material}" if material else "There are no course notes to use.")
+    )
+    return _call(prompt, system, json_mode=False)
+
+
+def generate_exam_study_plan(exams, units):
+    """Build a dated semester revision plan from exam dates, confidence, and unit notes."""
+    system = (
+        "You are a careful university exam study tutor. " + SAFETY + " "
+        "Create an actionable, detailed revision plan in plain text with clear headings, "
+        "calendar dates, and concise task lists. Never claim a detail comes from notes unless "
+        "it is present in the supplied material."
+    )
+    exam_text = json.dumps(exams, ensure_ascii=False)
+    unit_text = json.dumps(units, ensure_ascii=False)
+    prompt = (
+        "Create a personalized study plan covering the whole exam period for this student.\n"
+        "Use the supplied exam dates to prioritize nearer exams and distribute revision across "
+        "the available days. Respect each unit's stated understanding level: devote more "
+        "foundational teaching and practice to lower-confidence units, and use retrieval "
+        "practice and timed questions for stronger units. Include a practical daily schedule, "
+        "specific revision methods, breaks, and a final review before each exam. If dates are "
+        "too close together, make the plan realistic and prioritize high-value topics.\n"
+        "Use uploaded lecturer/course PDF material as the primary source when provided, naming "
+        "the source file and page where useful. Where material is missing or does not cover a "
+        "topic, supplement with accurate general knowledge and clearly label it as general "
+        "knowledge. Never invent a lecturer resource or specific syllabus coverage.\n\n"
+        f"Exams:\n{exam_text}\n\nUnits, understanding levels, and available course material:\n{unit_text}"
     )
     return _call(prompt, system, json_mode=False)

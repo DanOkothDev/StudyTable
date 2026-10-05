@@ -152,7 +152,8 @@ def extract_timetable_layout(path):
             lines = ["Weekly timetable layout (PDF x coordinates increase from left to right)."]
             if hours:
                 header = ", ".join(
-                    f"x={left:.0f}-{right:.0f}: {label}" for left, right, label in sorted(hours))
+                    f"x={left:.0f}-{right:.0f} (center={(left + right) / 2:.0f}): {label}"
+                    for left, right, label in sorted(hours))
                 lines.append(f"Hour headers: {header}")
             for day, _ in ordered_days:
                 fragments = sorted(entries[day], key=lambda item: (-item[1], item[0]))
@@ -199,6 +200,8 @@ class Semester(db.Model):
     courses = db.relationship("Course", backref="semester")     # a unit is a Course
     timetable_filename = db.Column(db.String(255), nullable=True)
     timetable_stored_name = db.Column(db.String(255), nullable=True)
+    exam_timetable_filename = db.Column(db.String(255), nullable=True)
+    exam_timetable_stored_name = db.Column(db.String(255), nullable=True)
     assessments = db.relationship("Assessment", backref="semester", cascade="all, delete-orphan",
                                   order_by="Assessment.date")
     classes = db.relationship("ClassSession", backref="semester", cascade="all, delete-orphan",
@@ -214,6 +217,7 @@ class Assessment(db.Model):
     course_name = db.Column(db.String(120), nullable=False)
     title = db.Column(db.String(160), nullable=False)
     date = db.Column(db.Date, nullable=False)
+    start_time = db.Column(db.Time, nullable=True)
     __table_args__ = (db.Index("ix_assessment_semester_date", "semester_id", "date"),
                       db.Index("ix_assessment_date", "date"))
 
@@ -492,7 +496,8 @@ def cat_summary(c):
 def assessment_json(assessment):
     return {"id": assessment.id, "semester_id": assessment.semester_id,
             "course_id": assessment.course_id, "course_name": assessment.course_name,
-            "title": assessment.title, "date": assessment.date.isoformat()}
+            "title": assessment.title, "date": assessment.date.isoformat(),
+            "start_time": assessment.start_time.strftime("%H:%M") if assessment.start_time else None}
 
 
 def class_session_json(session):
@@ -609,7 +614,9 @@ def get_semester(semester_id):
     return jsonify(id=sem.id, number=sem.number, year={"id": sem.year.id, "number": sem.year.number},
                    courses=[{"id": c.id, "name": c.name, "document_count": len(c.documents)} for c in units],
                    timetable_filename=sem.timetable_filename,
-                   classes=[class_session_json(session) for session in sem.classes])
+                   classes=[class_session_json(session) for session in sem.classes],
+                   exam_timetable_filename=sem.exam_timetable_filename,
+                   assessments=[assessment_json(assessment) for assessment in sem.assessments])
 
 
 @app.post("/api/semesters/<int:semester_id>/timetable")
@@ -689,6 +696,143 @@ def upload_timetable(semester_id):
         previous_path.unlink(missing_ok=True)
     return jsonify(timetable_filename=sem.timetable_filename,
                    classes=[class_session_json(session) for session in sem.classes]), 201
+
+
+@app.post("/api/semesters/<int:semester_id>/exam-timetable")
+@login_required
+def upload_exam_timetable(semester_id):
+    sem = owned_semester_or_404(semester_id)
+    file = request.files.get("file")
+    if not file or not file.filename.lower().endswith(".pdf"):
+        return jsonify(error="upload a .pdf exam timetable in the 'file' field"), 400
+
+    stored_name = f"{uuid.uuid4().hex}.pdf"
+    path = UPLOAD_DIR / stored_name
+    file.save(path)
+    try:
+        pages = extract_timetable_layout(path)
+    except Exception:
+        path.unlink(missing_ok=True)
+        return jsonify(error="could not read that exam timetable PDF"), 400
+    timetable_text = "\n\n".join(text for text in pages if text).strip()
+    if not timetable_text:
+        path.unlink(missing_ok=True)
+        return jsonify(error="this PDF has no readable text; upload a text-based exam timetable PDF"), 400
+
+    blocked = quota_block()
+    if blocked:
+        path.unlink(missing_ok=True)
+        return blocked
+
+    courses = sorted(sem.courses, key=lambda course: course.name.lower())
+    try:
+        parsed = ai.extract_exams([course.name for course in courses],
+                                  timetable_text[:30000], date.today().isoformat())
+    except ai.AIError as e:
+        path.unlink(missing_ok=True)
+        return ai_failure(e)
+
+    matched_courses = {course.name.casefold(): course for course in courses}
+    assessments = []
+    seen = set()
+    for item in parsed:
+        course = matched_courses.get(item["course_name"].casefold())
+        exam_date = date.fromisoformat(item["date"])
+        start_time = datetime.strptime(item["start_time"], "%H:%M").time() if item["start_time"] else None
+        key = (course.id if course else None, item["course_name"].casefold(),
+               item["title"].casefold(), exam_date, start_time)
+        if key in seen:
+            continue
+        seen.add(key)
+        assessments.append(Assessment(
+            course_id=course.id if course else None,
+            course_name=course.name if course else item["course_name"],
+            title=item["title"],
+            date=exam_date,
+            start_time=start_time,
+        ))
+    if not assessments:
+        path.unlink(missing_ok=True)
+        return jsonify(error="no dated exams were detected; upload an exam timetable with unit names and dates"), 422
+
+    previous_path = UPLOAD_DIR / sem.exam_timetable_stored_name if sem.exam_timetable_stored_name else None
+    try:
+        Assessment.query.filter_by(semester_id=sem.id).delete()
+        sem.assessments = assessments
+        sem.exam_timetable_filename = file.filename[:255]
+        sem.exam_timetable_stored_name = stored_name
+        record_ai_call()
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        path.unlink(missing_ok=True)
+        raise
+
+    if previous_path and previous_path != path:
+        previous_path.unlink(missing_ok=True)
+    return jsonify(exam_timetable_filename=sem.exam_timetable_filename,
+                   assessments=[assessment_json(assessment) for assessment in sem.assessments]), 201
+
+
+@app.post("/api/semesters/<int:semester_id>/study-plan")
+@login_required
+def generate_exam_study_plan(semester_id):
+    sem = owned_semester_or_404(semester_id)
+    courses = sorted(sem.courses, key=lambda course: course.name.lower())
+    if not courses:
+        return jsonify(error="add the semester's units before creating a study plan"), 400
+    data = request.get_json(silent=True) or {}
+    raw_levels = data.get("understanding")
+    if not isinstance(raw_levels, dict):
+        return jsonify(error="select an understanding level for every unit"), 400
+    levels = {}
+    for course in courses:
+        level = raw_levels.get(str(course.id))
+        if not isinstance(level, int) or isinstance(level, bool) or not 1 <= level <= 5:
+            return jsonify(error=f"select an understanding level for {course.name}"), 400
+        levels[course.id] = level
+    if not sem.assessments:
+        return jsonify(error="upload an exam timetable before creating a study plan"), 400
+
+    exams = [assessment_json(assessment) for assessment in sem.assessments]
+    units = []
+    has_material = False
+    remaining_chars = 24000
+    for course in courses:
+        unit = {"name": course.name, "understanding_level": levels[course.id],
+                "understanding_label": {
+                    1: "I do not understand this unit yet",
+                    2: "I understand a little",
+                    3: "I understand some topics",
+                    4: "I understand most topics",
+                    5: "I understand this unit well",
+                }[levels[course.id]]}
+        pages = (Page.query.join(Document)
+                 .filter(Document.course_id == course.id, Page.text != "")
+                 .order_by(Page.document_id, Page.page_number).limit(8).all())
+        material = "\n\n".join(
+            f"[{page.document.filename}, page {page.page_number}]\n{page.text[:1000]}"
+            for page in pages
+        )
+        material = material[:min(6000, remaining_chars)]
+        remaining_chars -= len(material)
+        if material:
+            unit["course_material"] = material
+            has_material = True
+        else:
+            unit["course_material"] = None
+        units.append(unit)
+
+    blocked = quota_block()
+    if blocked:
+        return blocked
+    try:
+        plan = ai.generate_exam_study_plan(exams, units)
+    except ai.AIError as e:
+        return ai_failure(e)
+    record_ai_call()
+    db.session.commit()
+    return jsonify(plan=plan, source="course_documents" if has_material else "general_knowledge")
 
 
 @app.get("/api/classes")

@@ -60,6 +60,16 @@ export const api = {
       body: form,
     });
   },
+  uploadExamTimetable: (semesterId, file) => {
+    const form = new FormData();
+    form.append("file", file);
+    return req(`/semesters/${semesterId}/exam-timetable`, {
+      method: "POST",
+      body: form,
+    });
+  },
+  examStudyPlan: (semesterId, understanding) =>
+    req(`/semesters/${semesterId}/study-plan`, send("POST", { understanding })),
   createUnit: (semesterId, name) =>
     req("/courses", send("POST", { name, semester_id: semesterId })),
   moveCourse: (id, semesterId) =>

@@ -2,7 +2,13 @@ import { useEffect, useState } from "react";
 import { api } from "./api";
 import Logo from "./Logo";
 import Auth from "./Auth";
-import { Years, YearView, SemesterView } from "./Browse";
+import {
+  Years,
+  YearView,
+  SemesterView,
+  invalidateSemester,
+  invalidateYears,
+} from "./Browse";
 import Course from "./Course";
 import Reader from "./Reader";
 import Recap from "./Recap";
@@ -86,7 +92,12 @@ export default function App() {
             sem={sem}
             onBack={() => setNav({ year, sem })}
             onOpenDoc={(d) => setNav({ year, sem, course, doc: d })}
-            onMoved={(y, s) => setNav({ year: y, sem: s, course })}
+            onMoved={(y, s) => {
+              invalidateSemester(sem.id);
+              invalidateSemester(s.id);
+              invalidateYears();
+              setNav({ year: y, sem: s, course });
+            }}
           />
         ) : sem ? (
           <SemesterView
