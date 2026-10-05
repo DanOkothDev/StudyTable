@@ -4,6 +4,7 @@ import logging
 import os
 import re
 import time
+from collections import defaultdict
 from datetime import date
 from threading import Lock
 from types import SimpleNamespace
@@ -358,6 +359,111 @@ def _class_time(value):
     return False
 
 
+def _layout_hour_headers(timetable_text):
+    header_line = next(
+        (line for line in timetable_text.splitlines() if line.startswith("Hour headers:")),
+        "",
+    )
+    matches = re.findall(
+        r"center=([\d.]+)\):\s*(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})",
+        header_line,
+    )
+    headers = []
+    previous_start = None
+    for center, start_text, end_text in matches:
+        start = _class_time(start_text)
+        end = _class_time(end_text)
+        if start is False or end is False:
+            continue
+        start_minutes = int(start[:2]) * 60 + int(start[3:])
+        end_minutes = int(end[:2]) * 60 + int(end[3:])
+        raw_start_hour = int(start_text.split(":")[0])
+        raw_end_hour = int(end_text.split(":")[0])
+        if previous_start is not None and raw_start_hour <= 12:
+            while start_minutes <= previous_start:
+                start_minutes += 12 * 60
+        while end_minutes <= start_minutes:
+            end_minutes += 12 * 60 if raw_end_hour <= 12 else 24 * 60
+        headers.append((float(center), start_minutes, end_minutes))
+        previous_start = start_minutes
+    return headers
+
+
+def _course_code(value):
+    match = re.search(r"\b[A-Z]{2,}\s*\d{4,5}[A-Z]?\b", value, re.IGNORECASE)
+    return re.sub(r"\s+", "", match.group()).upper() if match else None
+
+
+def _layout_class_occurrences(course_names, timetable_text):
+    headers = _layout_hour_headers(timetable_text)
+    if len(headers) < 2:
+        return []
+
+    names_by_code = {}
+    for name in course_names:
+        code = _course_code(name)
+        if code:
+            names_by_code.setdefault(code, name)
+
+    row_pattern = re.compile(r"^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday) row:$")
+    fragment_pattern = re.compile(
+        r"^\s*x=[\d.]+, y=[\d.]+, cell=([\d.]+)-([\d.]+):\s*(.+)$"
+    )
+    code_pattern = re.compile(r"\b[A-Z]{2,}\s*\d{4,5}[A-Z]?\b", re.IGNORECASE)
+    occurrences = []
+    day = None
+    cells = defaultdict(list)
+    for line in timetable_text.splitlines():
+        row = row_pattern.match(line.strip())
+        if row:
+            day = WEEKDAY_NUMBERS[row.group(1).lower()]
+            continue
+        fragment = fragment_pattern.match(line)
+        if day is None or not fragment:
+            continue
+        left, right = float(fragment.group(1)), float(fragment.group(2))
+        cells[(day, left, right)].append(fragment.group(3))
+
+    for (day, left, right), labels in cells.items():
+        cell_label = " ".join(labels)
+        cell_codes = list(code_pattern.finditer(cell_label))
+        if not cell_codes:
+            continue
+        interval_indexes = [
+            index for index, header in enumerate(headers)
+            if left - 1 <= header[0] <= right + 1
+        ]
+        if interval_indexes:
+            time_start = headers[interval_indexes[0]][1]
+            time_end = headers[interval_indexes[-1]][2]
+        else:
+            center = (left + right) / 2
+            interval = min(range(len(headers)), key=lambda index: abs(headers[index][0] - center))
+            time_start, time_end = headers[interval][1:]
+
+        for code_match in cell_codes:
+            code = re.sub(r"\s+", "", code_match.group()).upper()
+            title_match = re.search(
+                r"\b(lab(?:oratory)?|lec(?:ture)?|tutorial|seminar)\b",
+                cell_label,
+                re.IGNORECASE,
+            )
+            title = title_match.group(1).capitalize() if title_match else "Class"
+            if title.lower() in {"lec", "lecture"}:
+                title = "Lecture"
+            name = names_by_code.get(code, cell_label[:120].strip())
+            start_text = f"{time_start // 60 % 24:02d}:{time_start % 60:02d}"
+            end_text = f"{time_end // 60 % 24:02d}:{time_end % 60:02d}"
+            occurrences.append({
+                "course_name": name,
+                "title": title,
+                "weekday": day,
+                "start_time": start_text,
+                "end_time": end_text,
+            })
+    return occurrences
+
+
 def extract_classes(course_names, timetable_text):
     """Extract recurring weekly lectures/classes from a text-based semester timetable."""
     system = ("You extract recurring class sessions from a student's semester timetable. "
@@ -377,23 +483,26 @@ def extract_classes(course_names, timetable_text):
         "Reply with a class for every identifiable course-labelled grid entry; do not require "
         "assessment dates or class-type words. Do not invent classes. Return an empty list only "
         "if no course-labelled weekly class entries can be read.\n"
-        "The extracted text includes x/y coordinates and the center x coordinate of each hourly "
-        "header. Use the class label's x position relative to those header centers to identify "
-        "the occupied timetable cell(s), not just the nearest single column. A label centered "
-        "on a header center occupies that one-hour interval. A label centered halfway between "
-        "two adjacent header centers is in a merged cell spanning both intervals: start at the "
-        "first interval's start and end at the second interval's end. Apply the same rule to "
-        "longer merged cells using their span and midpoint. Do not default every class to one "
-        "hour when its cell spans multiple columns. For example, if 09:00-10:00 and "
-        "10:00-11:00 are adjacent columns, a class centered between their centers runs "
-        "09:00-11:00, while one centered on the first column runs 09:00-10:00. Fragments with "
-        "nearby x positions in one weekday row may be wrapped lines of the same class; join "
-        "continuations. If a fragment contains two course codes, extract both classes. Ignore "
-        "instructor lists outside the weekday rows.\n"
+        "The layout includes the actual horizontal grid-cell boundaries for each weekday. "
+        "Each class fragment gives its cell's left and right x boundaries. Use the hourly-header "
+        "centers that fall inside those boundaries to determine the full start and end time; "
+        "never infer a duration from the label's text center or assume every class lasts one "
+        "hour. Lines in the same weekday cell are wrapped text for one lesson and should be "
+        "combined. Fragments in different cells are separate lessons, even if PDF text extraction "
+        "places them on the same line. If a cell contains multiple course codes, emit one class "
+        "per code. Ignore instructor lists outside the weekday rows.\n"
         'Reply as: {"classes":[{"course_name":"...","title":"...","weekday":0,'
         '"start_time":"09:00","end_time":"10:00"}]}\n\n'
         "Timetable text:\n" + timetable_text
     )
+    layout_classes = _layout_class_occurrences(course_names, timetable_text)
+    if layout_classes:
+        log.info(
+            "Extracted %d course-coded timetable sessions from PDF grid cells",
+            len(layout_classes),
+        )
+        return layout_classes
+
     data = _parse_json(_call(prompt, system, json_mode=True))
     if not isinstance(data, dict) or not isinstance(data.get("classes"), list):
         raise AIError("The AI couldn't read recurring classes from this timetable. Try again.")
@@ -418,6 +527,7 @@ def extract_classes(course_names, timetable_text):
             for weekday in weekdays:
                 out.append({"course_name": name, "title": title, "weekday": weekday,
                             "start_time": start_time, "end_time": end_time})
+    out.extend(layout_classes)
     return out
 
 

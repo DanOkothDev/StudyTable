@@ -18,6 +18,7 @@ from flask_login import (LoginManager, UserMixin, current_user,
 from flask_migrate import Migrate
 from flask_sqlalchemy import SQLAlchemy
 import pypdfium2 as pdfium
+from pypdfium2 import raw as pdfium_raw
 from sqlalchemy import func
 from werkzeug.security import check_password_hash, generate_password_hash
 
@@ -115,6 +116,27 @@ def extract_timetable_layout(path):
                 right = max(box[2] for box in boxes)
                 hours.append((left, right, match.group().replace(" ", "")))
 
+            vertical_lines = []
+            for obj in page.get_objects(filter=[pdfium_raw.FPDF_PAGEOBJ_PATH]):
+                bounds = obj.get_bounds()
+                if bounds and bounds[2] - bounds[0] <= 2 and bounds[3] - bounds[1] >= 8:
+                    vertical_lines.append(((bounds[0] + bounds[2]) / 2, bounds[1], bounds[3]))
+
+            row_borders = {}
+            for day, day_y in ordered_days:
+                line_positions = sorted(
+                    x for x, bottom, top in vertical_lines
+                    if hours and bottom - 1 <= day_y <= top + 1
+                    and hours[0][0] - 20 <= x <= hours[-1][1] + 20
+                )
+                borders = []
+                for x in line_positions:
+                    if borders and x - borders[-1] < 2:
+                        borders[-1] = (borders[-1] + x) / 2
+                    else:
+                        borders.append(x)
+                row_borders[day] = [round(x, 1) for x in borders]
+
             entries = {day: [] for day, _ in ordered_days}
             for line in re.finditer(r"[^\r\n]+", text):
                 glyphs = []
@@ -141,14 +163,50 @@ def extract_timetable_layout(path):
                     if not value:
                         continue
                     center_y = sum((glyph[3] + glyph[5]) / 2 for glyph in segment) / len(segment)
-                    center_x = sum((glyph[2] + glyph[4]) / 2 for glyph in segment) / len(segment)
                     day, day_y = min(ordered_days, key=lambda item: abs(item[1] - center_y))
-                    if abs(day_y - center_y) > row_threshold or center_x < width * 0.12:
+                    if abs(day_y - center_y) > row_threshold:
                         continue
-                    if re.fullmatch(r"(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)",
-                                    value, re.IGNORECASE):
+
+                    borders = row_borders.get(day, [])
+                    if len(borders) < 2:
+                        center_x = sum((glyph[2] + glyph[4]) / 2 for glyph in segment) / len(segment)
+                        if center_x >= width * 0.12:
+                            entries[day].append((center_x, center_y, value))
                         continue
-                    entries[day].append((center_x, center_y, value))
+
+                    cell_words = defaultdict(list)
+                    for word in re.finditer(r"\S+", value):
+                        word_glyphs = [
+                            glyph for glyph in segment
+                            if start + word.start() <= glyph[0] < start + word.end()
+                        ]
+                        if not word_glyphs:
+                            continue
+                        word_x = sum(
+                            (glyph[2] + glyph[4]) / 2 for glyph in word_glyphs
+                        ) / len(word_glyphs)
+                        cell_index = next(
+                            (i for i in range(len(borders) - 1)
+                             if borders[i] <= word_x <= borders[i + 1]),
+                            None,
+                        )
+                        if cell_index is not None:
+                            cell_words[cell_index].append(word.group())
+
+                    for cell_index, words in cell_words.items():
+                        fragment = " ".join(words).strip()
+                        if not fragment:
+                            continue
+                        if re.fullmatch(
+                                r"(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)",
+                                fragment, re.IGNORECASE):
+                            continue
+                        cell_center = (borders[cell_index] + borders[cell_index + 1]) / 2
+                        entries[day].append((
+                            cell_center, center_y,
+                            f"cell={borders[cell_index]:.1f}-{borders[cell_index + 1]:.1f}: "
+                            f"{fragment}",
+                        ))
 
             lines = ["Weekly timetable layout (PDF x coordinates increase from left to right)."]
             if hours:
@@ -157,11 +215,15 @@ def extract_timetable_layout(path):
                     for left, right, label in sorted(hours))
                 lines.append(f"Hour headers: {header}")
             for day, _ in ordered_days:
+                if row_borders.get(day):
+                    borders = ", ".join(f"{x:.1f}" for x in row_borders[day])
+                    lines.append(f"{day} grid x boundaries: {borders}")
                 fragments = sorted(entries[day], key=lambda item: (-item[1], item[0]))
                 if fragments:
                     lines.append(f"{day} row:")
                     lines.extend(
-                        f"  x={x:.0f}, y={y:.0f}: {value}" for x, y, value in fragments)
+                        f"  x={x:.1f}, y={y:.1f}, {value}"
+                        for x, y, value in fragments)
             pages.append("\n".join(lines))
             textpage.close()
             page.close()

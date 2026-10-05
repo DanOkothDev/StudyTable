@@ -44,7 +44,7 @@ The app uses Google Gemini for these functions:
 ### 6. Lecture timetable reminders and preparation
 - Upload a text-based PDF semester lecture timetable.
 - Timetable PDFs must contain selectable text; scanned/image-only PDFs are not OCRed.
-- Extract recurring class days, times, and course names with Gemini.
+- Extract recurring class days, course names, and durations from PDF grid cells; use AI when course labels cannot be matched directly.
 - See tomorrow's classes on the home page.
 - Open a pre-class recap based on readable course PDFs, or on general knowledge when no readable course material is available.
 
