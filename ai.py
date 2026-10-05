@@ -5,6 +5,10 @@ import os
 import re
 import time
 from datetime import date
+from threading import Lock
+from types import SimpleNamespace
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 from google import genai
 from google.genai import types
@@ -14,12 +18,32 @@ log = logging.getLogger("studytable.ai")
 # Model names change over time. Set GEMINI_MODEL in .env to any model your key can use
 # (check the list in Google AI Studio).
 MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
+GROQ_MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-20b")
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5:7b")
+OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434/v1")
+GEMINI_COOLDOWN_SECONDS = 60
 
 _client = None
+_gemini_cooldown_until = 0.0
+_gemini_cooldown_lock = Lock()
 
 
 class AIError(Exception):
     """Raised with a message that is safe to show to the user."""
+
+
+def _gemini_cooldown_remaining():
+    with _gemini_cooldown_lock:
+        return max(0, _gemini_cooldown_until - time.monotonic())
+
+
+def _cool_down_gemini():
+    global _gemini_cooldown_until
+    with _gemini_cooldown_lock:
+        _gemini_cooldown_until = max(
+            _gemini_cooldown_until,
+            time.monotonic() + GEMINI_COOLDOWN_SECONDS,
+        )
 
 
 def _get_client():
@@ -32,43 +56,137 @@ def _get_client():
     return _client
 
 
-def _call(prompt, system, json_mode, tools=None, include_response=False):
+def _gemini_call(prompt, system, json_mode, tools):
     config = types.GenerateContentConfig(
         system_instruction=system,
         temperature=0.4,
         response_mime_type="application/json" if json_mode else None,
         tools=tools,
     )
-    text = ""
-    waits = [3, 8]   # seconds to wait before retry 1 and retry 2
-    for attempt in range(3):
-        try:
-            resp = _get_client().models.generate_content(model=MODEL, contents=prompt, config=config)
-            text = (resp.text or "").strip()
-            break
-        except AIError:
-            raise
-        except Exception as e:
-            code = getattr(e, "code", None)
-            status = getattr(e, "status", None) or ""
-            if attempt < 2 and code in (500, 503, 504):   # Google-side hiccup: wait and try again
-                log.warning("Gemini %s %s, retrying in %ss", code, status, waits[attempt])
-                time.sleep(waits[attempt])
-                continue
-            log.exception("Gemini call failed")
-            msg = str(e).lower()
-            if code == 404 or "not_found" in msg:
-                raise AIError(f"The AI model '{MODEL}' isn't available to your key. "
-                              "Set GEMINI_MODEL in .env to a current model from Google AI Studio.") from e
-            if code == 429 or "quota" in msg or "resource_exhausted" in msg:
-                raise AIError("Gemini's free limit was reached. Try again in a minute.") from e
-            if code in (500, 503, 504):
-                raise AIError(f"Gemini is busy right now ({code} {status}). Try again in a minute.") from e
-            raise AIError(f"The AI service had a problem ({code or type(e).__name__} {status}). "
-                          "Try again in a moment.".replace("  ", " ")) from e
+    try:
+        resp = _get_client().models.generate_content(model=MODEL, contents=prompt, config=config)
+    except AIError:
+        raise
+    except Exception as e:
+        code = getattr(e, "code", None)
+        status = getattr(e, "status", None) or ""
+        log.exception("Gemini call failed")
+        msg = str(e).lower()
+        status_text = str(status).lower()
+        quota_error = str(code) == "429" or "quota" in msg or "resource_exhausted" in msg
+        busy_error = str(code) in {"408", "500", "502", "503", "504"} or isinstance(
+            e, (TimeoutError, ConnectionError)
+        ) or any(
+            marker in f"{msg} {status_text}"
+            for marker in (
+                "408", "500", "502", "503", "504", "unavailable",
+                "deadline_exceeded", "timed out", "connection reset",
+                "connection refused",
+            )
+        )
+        if quota_error or busy_error:
+            _cool_down_gemini()
+        if code == 404 or "not_found" in msg:
+            raise AIError(f"The AI model '{MODEL}' isn't available to your key. "
+                          "Set GEMINI_MODEL in .env to a current model from Google AI Studio.") from e
+        if quota_error:
+            raise AIError("Gemini's free limit was reached. Try again in a minute.") from e
+        if busy_error:
+            raise AIError(f"Gemini is busy right now ({code} {status}). Using the next provider.") from e
+        raise AIError(f"The AI service had a problem ({code or type(e).__name__} {status}). "
+                      "Try again in a moment.".replace("  ", " ")) from e
+    text = (resp.text or "").strip()
     if not text:
         raise AIError("The AI returned an empty answer. Try again.")
-    return resp if include_response else text
+    return resp
+
+
+def _openai_compatible_call(provider, base_url, api_key, model, prompt, system, json_mode, tools):
+    if tools:
+        system += (
+            " This provider cannot run the requested Gemini search tool. Do not claim that "
+            "you searched the web, do not present facts as current research, and do not invent "
+            "source links. Be clear when guidance relies on general knowledge."
+        )
+    body = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0.4,
+    }
+    if json_mode:
+        body["response_format"] = {"type": "json_object"}
+    request = Request(
+        base_url.rstrip("/") + "/chat/completions",
+        data=json.dumps(body).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_key or 'ollama'}",
+            "Content-Type": "application/json",
+            "User-Agent": "StudyTable/1.0",
+        },
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=120) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except HTTPError as e:
+        detail = e.read().decode("utf-8", errors="replace")[:300]
+        raise AIError(f"{provider} returned HTTP {e.code}: {detail or e.reason}") from e
+    except (URLError, TimeoutError, OSError) as e:
+        raise AIError(f"{provider} could not be reached: {e}") from e
+    except (UnicodeDecodeError, json.JSONDecodeError) as e:
+        raise AIError(f"{provider} returned an invalid response.") from e
+    try:
+        text = data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as e:
+        raise AIError(f"{provider} returned no answer.") from e
+    if not isinstance(text, str) or not text.strip():
+        raise AIError(f"{provider} returned an empty answer.")
+    return SimpleNamespace(text=text.strip(), candidates=[], provider=provider)
+
+
+def _call(prompt, system, json_mode, tools=None, include_response=False):
+    providers = [("Gemini", lambda: _gemini_call(prompt, system, json_mode, tools))]
+    cooldown = _gemini_cooldown_remaining()
+    if cooldown:
+        providers = providers[1:]
+        log.info("Skipping Gemini while its temporary cooldown is active (%.0fs remaining)", cooldown)
+    groq_key = os.environ.get("GROQ_API_KEY", "").strip()
+    if groq_key:
+        providers.append(("Groq", lambda: _openai_compatible_call(
+            "Groq", os.environ.get("GROQ_BASE_URL", "https://api.groq.com/openai/v1"),
+            groq_key, GROQ_MODEL, prompt, system, json_mode, tools)))
+    if os.environ.get("OLLAMA_ENABLED", "1").lower() not in {"0", "false", "no"}:
+        providers.append(("Ollama", lambda: _openai_compatible_call(
+            "Ollama", OLLAMA_BASE_URL, "", OLLAMA_MODEL, prompt, system, json_mode, tools)))
+
+    failures = (
+        ["Gemini is temporarily busy; its cooldown is active."]
+        if cooldown else []
+    )
+    for provider, call in providers:
+        try:
+            response = call()
+            if provider == "Gemini":
+                response = SimpleNamespace(
+                    text=(response.text or "").strip(),
+                    candidates=response.candidates or [],
+                    provider=provider,
+                )
+            if not response.text:
+                raise AIError(f"{provider} returned an empty answer.")
+            if json_mode:
+                _parse_json(response.text)
+            log.info("AI request completed with %s", provider)
+            return response if include_response else response.text
+        except AIError as e:
+            failures.append(f"{provider}: {e}")
+            log.warning("%s failed; trying the next configured AI provider: %s", provider, e)
+
+    details = " | ".join(failures)
+    raise AIError(f"All configured AI providers failed. {details}")
 
 
 def _parse_json(text):
@@ -127,7 +245,8 @@ def ask(course_name, page_text, question, history=None, page_number=None):
     system = ("You are a patient tutor helping a student revise. Use the page text when it is relevant. "
               "If the answer is not on the page, say so, then answer from general knowledge and mark that part "
               "as general knowledge. Keep answers under about 200 words unless asked for more. "
-              "Plain text only, no markdown headings. " + SAFETY)
+              "Use concise Markdown formatting when it improves readability: short headings for multi-part "
+              "answers, bullets or numbered steps for lists, and bold only for key terms. " + SAFETY)
     convo = ""
     if history:
         turns = [f"Student (on page {h['page']}): {h['q']}\nTutor: {h['a']}" for h in history]
@@ -360,7 +479,7 @@ def generate_class_recap(course_name, class_title, start_time, material):
     )
     system = (
         "You are a careful university study tutor. " + SAFETY + " "
-        "Write a practical, focused pre-class study recap in plain text with short headings "
+        "Write a practical, focused pre-class study recap in Markdown with short headings "
         "and bulleted points. Include key ideas to review before class, concrete things to "
         "check in the student's notes, and a few quick self-check questions with brief answers."
     )
@@ -376,7 +495,7 @@ def generate_exam_study_plan(exams, units):
     """Build a dated semester revision plan from exam dates, confidence, and unit notes."""
     system = (
         "You are a careful university exam study tutor. " + SAFETY + " "
-        "Create an actionable, detailed revision plan in plain text with clear headings, "
+        "Create an actionable, detailed revision plan in Markdown with clear headings, "
         "calendar dates, and concise task lists. Never claim a detail comes from notes unless "
         "it is present in the supplied material."
     )
@@ -419,7 +538,8 @@ def generate_daily_insight(profile, today):
         "writing a generic list. Prefer primary sources, reputable technical publications, "
         "standards bodies, or credible industry reports from the last 12 months when available. "
         "Clearly state why it matters to this student, suggest one concrete action they can "
-        "take this week, and mention uncertainty or limitations where relevant. Keep the answer "
+        "take this week, and mention uncertainty or limitations where relevant. Format the answer "
+        "with a short heading, clear paragraphs, and a concise action list in Markdown. Keep the answer "
         "focused and readable, around 250-400 words. Cite factual claims using the searched "
         "sources; do not fabricate statistics, organizations, dates, or URLs."
     )
@@ -444,6 +564,8 @@ def generate_daily_insight(profile, today):
             seen.add(uri)
             sources.append({"title": title if isinstance(title, str) and title else uri,
                             "url": uri})
-    if not sources:
-        raise AIError("Gemini couldn't provide verified source links for today's insight. Try again.")
-    return {"content": (response.text or "").strip(), "sources": sources[:8]}
+    return {
+        "content": (response.text or "").strip(),
+        "sources": sources[:8],
+        "provider": getattr(response, "provider", "Gemini"),
+    }

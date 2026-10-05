@@ -195,6 +195,7 @@ class DailyInsight(db.Model):
     day = db.Column(db.Date, nullable=False)
     content = db.Column(db.Text, nullable=False)
     sources = db.Column(db.Text, nullable=False)
+    provider = db.Column(db.String(40), nullable=False, default="Gemini")
     __table_args__ = (db.UniqueConstraint("user_id", "day"),
                       db.Index("ix_daily_insight_user_day", "user_id", "day"))
 
@@ -643,7 +644,7 @@ def get_daily_insight():
     insight = DailyInsight.query.filter_by(user_id=current_user.id, day=today).first()
     if insight is not None:
         return jsonify(content=insight.content, sources=json.loads(insight.sources),
-                       generated_for=insight.day.isoformat(), cached=True)
+                       generated_for=insight.day.isoformat(), provider=insight.provider, cached=True)
 
     blocked = quota_block()
     if blocked:
@@ -657,12 +658,13 @@ def get_daily_insight():
         day=today,
         content=result["content"],
         sources=json.dumps(result["sources"], ensure_ascii=False),
+        provider=result["provider"],
     )
     db.session.add(insight)
     record_ai_call()
     db.session.commit()
     return jsonify(content=insight.content, sources=result["sources"],
-                   generated_for=insight.day.isoformat(), cached=False)
+                   generated_for=insight.day.isoformat(), provider=insight.provider, cached=False)
 
 
 # ---------- Courses ----------

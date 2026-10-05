@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "./api";
+import FormattedText from "./FormattedText";
 
 const emptyProfile = {
   school: "",
@@ -127,7 +128,7 @@ export default function Profile({ email, onBack, onLogout }) {
         <div className="daily-insight-head">
           <div>
             <h2 id="daily-insight-title">Daily course insight</h2>
-            <p>Current trends and practical ways to stay competitive in your field.</p>
+            <p>Course and career guidance. Gemini insights include live search sources.</p>
           </div>
         </div>
         {!complete ? (
@@ -139,18 +140,27 @@ export default function Profile({ email, onBack, onLogout }) {
                 weekday: "long", month: "long", day: "numeric",
               })}
             </p>
-            <div className="insight-content">{insight.content}</div>
-            <h3>Sources</h3>
-            <ul className="insight-sources">
-              {insight.sources.map((source) => (
-                <li key={source.url}>
-                  <a href={source.url} target="_blank" rel="noreferrer">{source.title}</a>
-                </li>
-              ))}
-            </ul>
+            <p className="insight-provider">
+              {insight.provider === "Gemini" && insight.sources.length
+                ? "Live web research · Gemini"
+                : `${insight.provider} · Based on model knowledge, not live web search`}
+            </p>
+            <FormattedText className="insight-content">{insight.content}</FormattedText>
+            {insight.sources.length > 0 && (
+              <>
+                <h3>Sources</h3>
+                <ul className="insight-sources">
+                  {insight.sources.map((source) => (
+                    <li key={source.url}>
+                      <a href={source.url} target="_blank" rel="noreferrer">{source.title}</a>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
           </article>
         ) : loadingInsight ? (
-          <p role="status">Searching for today&apos;s course insight…</p>
+          <p role="status">Preparing today&apos;s course insight…</p>
         ) : insightError ? (
           <div>
             <p className="error" role="alert">{insightError}</p>

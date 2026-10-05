@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "./api";
+import FormattedText from "./FormattedText";
 
 export default function Panel({ course, doc, page, flush, quizSignal }) {
   const [tab, setTab] = useState("ask");
@@ -85,7 +86,9 @@ export default function Panel({ course, doc, page, flush, quizSignal }) {
                 ) : m.hidden ? (
                   <Reveal answer={m.a} />
                 ) : (
-                  <p className={"a" + (m.error ? " error" : "")}>{m.a}</p>
+                  <FormattedText className={"a" + (m.error ? " error" : "")}>
+                    {m.a}
+                  </FormattedText>
                 )}
               </div>
             ))}
@@ -128,7 +131,7 @@ export default function Panel({ course, doc, page, flush, quizSignal }) {
 function Reveal({ answer }) {
   const [open, setOpen] = useState(false);
   return open ? (
-    <p className="a">{answer}</p>
+    <FormattedText className="a">{answer}</FormattedText>
   ) : (
     <button className="chip" onClick={() => setOpen(true)}>
       Show answer

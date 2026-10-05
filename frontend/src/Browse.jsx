@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from './api';
+import FormattedText from './FormattedText';
 
 const TINTS = ['#FFD3BF', '#CFDCFF', '#CDEFD9', '#F9D5E8', '#FFEBA3', '#DCD2FA'];
 const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
@@ -367,7 +368,7 @@ export function SemesterView({ sem, onOpen }) {
                 ? 'Uses readable lecturer PDFs where available; general knowledge fills any gaps.'
                 : 'No readable lecturer PDFs were found; this plan uses general knowledge.'}
             </p>
-            <div>{studyPlan}</div>
+            <FormattedText>{studyPlan}</FormattedText>
           </article>
         )}
       </section>

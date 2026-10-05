@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "./api";
+import FormattedText from "./FormattedText";
 
 export default function Recap({ event, onBack }) {
   const [result, setResult] = useState(null);
@@ -34,7 +35,7 @@ export default function Recap({ event, onBack }) {
               ? "Based on your uploaded course documents"
               : "Based on general knowledge — no readable course documents were found"}
           </p>
-          <div className="recap-content">{result.recap}</div>
+          <FormattedText className="recap-content">{result.recap}</FormattedText>
         </article>
       ) : (
         <p role="status">Preparing your recap…</p>

@@ -98,6 +98,11 @@ The app expects environment variables in a `.env` file. Typical values include:
 - `COOKIE_SECURE`
 - `GEMINI_API_KEY`
 - `GEMINI_MODEL`
+- `GROQ_API_KEY` (optional fallback after Gemini fails)
+- `GROQ_MODEL` (optional; defaults to `openai/gpt-oss-20b`)
+- `OLLAMA_MODEL` (optional; defaults to `qwen2.5:7b`)
+- `OLLAMA_BASE_URL` (optional; defaults to `http://localhost:11434/v1`)
+- `OLLAMA_ENABLED` (optional; defaults to `1`)
 - `DAILY_AI_LIMIT`
 
 Example structure:
@@ -111,8 +116,22 @@ UPLOAD_DIR=uploads
 COOKIE_SECURE=0
 GEMINI_API_KEY=your-key
 GEMINI_MODEL=gemini-3.8-flash
+GROQ_API_KEY=
+GROQ_MODEL=openai/gpt-oss-20b
+OLLAMA_MODEL=qwen2.5:7b
+OLLAMA_BASE_URL=http://localhost:11434/v1
+OLLAMA_ENABLED=1
 DAILY_AI_LIMIT=20
 ```
+
+AI requests try Gemini first, then Groq when `GROQ_API_KEY` is set, then Ollama
+unless `OLLAMA_ENABLED=0`. Install and run Ollama on the same machine as the
+backend (for example, `ollama pull qwen2.5:7b`). Daily insights produced by
+Groq or Ollama are general model responses without Gemini's live Google Search
+grounding or source links. `DAILY_AI_LIMIT` is StudyTable's own per-user cap
+across all providers. After Gemini reports a quota or temporary server failure,
+the backend skips Gemini for 60 seconds and routes new requests directly to the
+next configured provider.
 
 ## Running the app
 
