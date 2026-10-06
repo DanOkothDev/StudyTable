@@ -763,6 +763,17 @@ def create_year():
     return jsonify(year_json(year)), 201
 
 
+@app.post("/api/years/<int:year_id>/semesters")
+@login_required
+def create_semester(year_id):
+    year = Year.query.filter_by(id=year_id, user_id=current_user.id).first_or_404()
+    number = max((sem.number for sem in year.semesters), default=0) + 1
+    semester = Semester(year_id=year.id, number=number)
+    db.session.add(semester)
+    db.session.commit()
+    return jsonify(id=semester.id, number=semester.number, unit_count=0), 201
+
+
 @app.get("/api/semesters/<int:semester_id>")
 @login_required
 def get_semester(semester_id):
@@ -774,6 +785,50 @@ def get_semester(semester_id):
                    classes=[class_session_json(session) for session in sem.classes],
                    exam_timetable_filename=sem.exam_timetable_filename,
                    assessments=[assessment_json(assessment) for assessment in sem.assessments])
+
+
+@app.patch("/api/semesters/<int:semester_id>")
+@login_required
+def update_semester(semester_id):
+    sem = owned_semester_or_404(semester_id)
+    number = (request.get_json(silent=True) or {}).get("number")
+    if not isinstance(number, int) or isinstance(number, bool) or number < 1:
+        return jsonify(error="semester number must be a positive integer"), 400
+    if Semester.query.filter(
+        Semester.year_id == sem.year_id,
+        Semester.number == number,
+        Semester.id != sem.id,
+    ).first():
+        return jsonify(error=f"Semester {number} already exists in this year"), 409
+    sem.number = number
+    db.session.commit()
+    return jsonify(id=sem.id, number=sem.number)
+
+
+@app.delete("/api/semesters/<int:semester_id>")
+@login_required
+def delete_semester(semester_id):
+    sem = owned_semester_or_404(semester_id)
+    stored_names = [
+        course_document.stored_name
+        for course in sem.courses
+        for course_document in course.documents
+    ]
+    if sem.timetable_stored_name:
+        stored_names.append(sem.timetable_stored_name)
+    if sem.exam_timetable_stored_name:
+        stored_names.append(sem.exam_timetable_stored_name)
+
+    Assessment.query.filter_by(semester_id=sem.id).update({Assessment.course_id: None})
+    ClassSession.query.filter_by(semester_id=sem.id).update({ClassSession.course_id: None})
+    for course in list(sem.courses):
+        db.session.delete(course)
+    db.session.delete(sem)
+    db.session.commit()
+
+    for stored_name in stored_names:
+        (UPLOAD_DIR / stored_name).unlink(missing_ok=True)
+    return jsonify(ok=True)
 
 
 @app.post("/api/semesters/<int:semester_id>/timetable")
@@ -810,22 +865,48 @@ def upload_timetable(semester_id):
         return ai_failure(e)
 
     matched_courses = {course.name.casefold(): course for course in courses}
+    user_course_names = {
+        course.name.casefold()
+        for course in Course.query.filter_by(user_id=current_user.id).all()
+    }
     classes = []
     seen = set()
     for item in parsed:
-        name = item["course_name"]
+        raw_name = item.get("course_name")
+        if not isinstance(raw_name, str):
+            continue
+        name = raw_name.strip()
+        if not name:
+            continue
         title = item["title"]
         weekday = item["weekday"]
         start_time = datetime.strptime(item["start_time"], "%H:%M").time() if item["start_time"] else None
         end_time = datetime.strptime(item["end_time"], "%H:%M").time() if item["end_time"] else None
         course = matched_courses.get(name.casefold())
-        key = (weekday, (course.id if course else None), title.casefold(), start_time)
+        if course is None and len(name) <= 120 and name.casefold() not in user_course_names:
+            course = Course(user_id=current_user.id, semester=sem, name=name)
+            db.session.add(course)
+            try:
+                db.session.flush()
+            except Exception:
+                db.session.rollback()
+                path.unlink(missing_ok=True)
+                raise
+            matched_courses[name.casefold()] = course
+            user_course_names.add(name.casefold())
+        course_key = (
+            course.id
+            if course is not None and course.id is not None
+            else name.casefold()
+        )
+        key = (weekday, course_key, title.casefold(), start_time)
         if key in seen:
             continue
         seen.add(key)
+        canonical_name = course.name if course else name[:120]
         classes.append(ClassSession(
             course_id=course.id if course else None,
-            course_name=course.name if course else name,
+            course_name=canonical_name,
             title=title,
             weekday=weekday,
             start_time=start_time,
@@ -838,6 +919,7 @@ def upload_timetable(semester_id):
 
     previous_path = UPLOAD_DIR / sem.timetable_stored_name if sem.timetable_stored_name else None
     try:
+        db.session.flush()
         ClassSession.query.filter_by(semester_id=sem.id).delete()
         sem.classes = classes
         sem.timetable_filename = file.filename[:255]
@@ -852,7 +934,10 @@ def upload_timetable(semester_id):
     if previous_path and previous_path != path:
         previous_path.unlink(missing_ok=True)
     return jsonify(timetable_filename=sem.timetable_filename,
-                   classes=[class_session_json(session) for session in sem.classes]), 201
+                   classes=[class_session_json(session) for session in sem.classes],
+                   courses=[{"id": course.id, "name": course.name,
+                             "document_count": len(course.documents)}
+                            for course in sorted(sem.courses, key=lambda c: c.name.lower())]), 201
 
 
 @app.post("/api/semesters/<int:semester_id>/exam-timetable")
@@ -1067,15 +1152,42 @@ def create_course():
 @app.patch("/api/courses/<int:course_id>")
 @login_required
 def move_course(course_id):
-    """Move a unit to another semester."""
+    """Move or rename a unit."""
     course = owned_course_or_404(course_id)
-    sid = (request.get_json(silent=True) or {}).get("semester_id")
-    if not isinstance(sid, int) or isinstance(sid, bool):
-        return jsonify(error="semester_id must be a number"), 400
-    sem = owned_semester_or_404(sid)
-    course.semester_id = sem.id
+    data = request.get_json(silent=True) or {}
+    name = None
+    sem = None
+    if "name" in data:
+        raw_name = data["name"]
+        if not isinstance(raw_name, str) or not raw_name.strip() or len(raw_name.strip()) > 120:
+            return jsonify(error="name is required (max 120 characters)"), 400
+        name = raw_name.strip()
+        duplicate = Course.query.filter(
+            Course.user_id == current_user.id,
+            Course.name == name,
+            Course.id != course.id,
+        ).first()
+        if duplicate:
+            return jsonify(error="you already have a unit with that name"), 409
+    if "semester_id" in data:
+        sid = data["semester_id"]
+        if not isinstance(sid, int) or isinstance(sid, bool):
+            return jsonify(error="semester_id must be a number"), 400
+        sem = owned_semester_or_404(sid)
+    if "name" not in data and "semester_id" not in data:
+        return jsonify(error="provide a name or semester_id"), 400
+    if name is not None:
+        course.name = name
+        ClassSession.query.filter_by(course_id=course.id).update(
+            {ClassSession.course_name: name}
+        )
+        Assessment.query.filter_by(course_id=course.id).update(
+            {Assessment.course_name: name}
+        )
+    if sem is not None:
+        course.semester_id = sem.id
     db.session.commit()
-    return jsonify(id=course.id, name=course.name, semester_id=sem.id)
+    return jsonify(id=course.id, name=course.name, semester_id=course.semester_id)
 
 
 @app.delete("/api/courses/<int:course_id>")

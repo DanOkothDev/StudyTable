@@ -52,7 +52,12 @@ export const api = {
   deleteCat: (id) => req(`/cats/${id}`, { method: "DELETE" }),
   years: () => req("/years"),
   createYear: (number) => req("/years", send("POST", number ? { number } : {})),
+  createSemester: (yearId) =>
+    req(`/years/${yearId}/semesters`, send("POST", {})),
   semester: (id) => req(`/semesters/${id}`),
+  updateSemester: (id, number) =>
+    req(`/semesters/${id}`, send("PATCH", { number })),
+  deleteSemester: (id) => req(`/semesters/${id}`, { method: "DELETE" }),
   classes: (date) => req(`/classes?date=${encodeURIComponent(date)}`),
   classRecap: (id) => req(`/classes/${id}/recap`, { method: "POST" }),
   uploadTimetable: (semesterId, file) => {
@@ -75,6 +80,8 @@ export const api = {
     req(`/semesters/${semesterId}/study-plan`, send("POST", { understanding })),
   createUnit: (semesterId, name) =>
     req("/courses", send("POST", { name, semester_id: semesterId })),
+  updateUnit: (id, name) => req(`/courses/${id}`, send("PATCH", { name })),
+  deleteUnit: (id) => req(`/courses/${id}`, { method: "DELETE" }),
   moveCourse: (id, semesterId) =>
     req(`/courses/${id}`, send("PATCH", { semester_id: semesterId })),
   deleteDocument: (id) => req(`/documents/${id}`, { method: "DELETE" }),

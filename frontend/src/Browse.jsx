@@ -19,6 +19,18 @@ button.folder.new:hover { border-color: var(--blue); }
 button.folder.new:hover strong { color: var(--blue); }
 .folder.new.open { align-items: stretch; background: #fff; border-style: solid; border-color: var(--blue); gap: 8px; }
 .folder.new.open .chips { margin-top: 6px; }
+.folder-card { position: relative; min-width: 0; margin-top: 18px; }
+.folder-card > .folder { width: 100%; height: 100%; margin: 0; }
+.folder-actions { position: absolute; z-index: 2; top: 6px; right: 8px; display: flex; gap: 2px; }
+.folder-action { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 9px; color: var(--muted); background: rgba(255, 255, 255, .88); }
+.folder-action:hover { color: var(--blue); background: #fff; }
+.folder-action.delete:hover { color: var(--err); }
+.folder-edit { display: flex; flex-direction: column; justify-content: center; gap: 8px; }
+.folder-edit input { width: 100%; min-width: 0; }
+.folder-edit-controls { display: flex; justify-content: flex-end; gap: 6px; }
+.folder-edit-controls button { padding: 5px 10px; border-radius: 9px; background: var(--paper); color: var(--muted); font-size: .88rem; }
+.folder-edit-controls button[type="submit"] { background: var(--ink); color: #fff; }
+.folder-edit-error { color: var(--err); font-size: .82rem; overflow-wrap: anywhere; }
 `;
 const yearsStyles = `
 .tomorrow { margin: 0 0 34px; padding: 22px 24px; border: 1px solid var(--line); border-radius: 20px; background: #fff; }
@@ -104,18 +116,112 @@ export function invalidateSemester(id) {
   semesterCache.delete(id);
 }
 
-function Grid({ items, onOpen, add }) {
+function GridItem({ item, index, onOpen, onEdit, onDelete }) {
+  const [editing, setEditing] = useState(false);
+  const [name, setName] = useState(item.editValue ?? item.name);
+  const [error, setError] = useState('');
+
+  async function save(e) {
+    e.preventDefault();
+    const nextName = name.trim();
+    if (!nextName) {
+      setError('Name cannot be empty.');
+      return;
+    }
+    try {
+      await onEdit(item, nextName);
+      setEditing(false);
+      setError('');
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function remove() {
+    const message = item.removeMessage || `Remove "${item.name}"? This cannot be undone.`;
+    if (!window.confirm(message)) return;
+    try {
+      await onDelete(item);
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  return (
+    <div className="folder-card">
+      {editing ? (
+        <form className="folder new open folder-edit" onSubmit={save}>
+          <input
+            autoFocus
+            value={name}
+            maxLength={item.maxLength || 120}
+            onChange={(e) => setName(e.target.value)}
+            aria-label={`Edit ${item.editLabel || item.name}`}
+          />
+          {error && <span className="folder-edit-error" role="alert">{error}</span>}
+          <div className="folder-edit-controls">
+            <button type="button" onClick={() => { setEditing(false); setName(item.name); setError(''); }}>Cancel</button>
+            <button type="submit">Save</button>
+          </div>
+        </form>
+      ) : (
+        <>
+          <button
+            className="folder"
+            onClick={() => onOpen(item)}
+            style={{ '--tint': TINTS[item.id % TINTS.length], '--i': index }}
+          >
+            <strong>{item.name}</strong>
+            <span>{item.meta}</span>
+          </button>
+          {onEdit && onDelete && (
+            <div className="folder-actions">
+              <button
+                className="folder-action"
+                type="button"
+                title={`Edit ${item.editLabel || item.name}`}
+                aria-label={`Edit ${item.editLabel || item.name}`}
+                onClick={() => { setName(item.editValue ?? item.name); setEditing(true); setError(''); }}
+              >
+                <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="m10.8 2.8 2.4 2.4M3 13l2.8-.6 7.5-7.5a1.7 1.7 0 0 0-2.4-2.4l-7.5 7.5L3 13Z" />
+                </svg>
+              </button>
+              <button
+                className="folder-action delete"
+                type="button"
+                title={`Remove ${item.name}`}
+                aria-label={`Remove ${item.name}`}
+                onClick={remove}
+              >
+                <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M2.5 4h11M6 4V2.5h4V4m2.5 0-.6 9.5H4.1L3.5 4m3 2.5v4m3-4v4" />
+                </svg>
+              </button>
+            </div>
+          )}
+        </>
+      )}
+      {!editing && error && <span className="folder-edit-error" role="alert">{error}</span>}
+    </div>
+  );
+}
+
+function Grid({ items, onOpen, add, onEdit, onDelete }) {
   return (
     <>
       <style>{gridStyles}</style>
       <div className="grid">
       {items === null && [0, 1, 2].map((i) => <div className="folder skeleton" key={i} />)}
       {items && items.map((it, i) => (
-        <button className="folder" key={it.id} onClick={() => onOpen(it)}
-                style={{ '--tint': TINTS[it.id % TINTS.length], '--i': i }}>
-          <strong>{it.name}</strong>
-          <span>{it.meta}</span>
-        </button>
+        <GridItem
+          key={it.id}
+          item={it}
+          index={i}
+          onOpen={() => onOpen(it)}
+          onEdit={onEdit}
+          onDelete={onDelete}
+        />
       ))}
       {items && add}
       </div>
@@ -198,16 +304,68 @@ export function Years({ onOpen }) {
 
 export function YearView({ year, onOpen }) {
   const [y, setY] = useState(null);
+  const [error, setError] = useState('');
   useEffect(() => {
     loadYears().then((ys) => setY(ys.find((x) => x.id === year.id) || null));
   }, [year.id]);
+
+  function saveYear(next) {
+    setY(next);
+    if (yearsCache.data) {
+      yearsCache.data = yearsCache.data.map((item) => item.id === next.id ? next : item);
+      yearsCache.promise = Promise.resolve(yearsCache.data);
+    }
+  }
+
+  async function editSemester(item, value) {
+    const number = Number(value);
+    if (!Number.isInteger(number) || number < 1) {
+      throw new Error('Enter a positive semester number.');
+    }
+    const updated = await api.updateSemester(item.id, number);
+    saveYear({
+      ...y,
+      semesters: y.semesters.map((semester) =>
+        semester.id === item.id ? { ...semester, number: updated.number } : semester,
+      ).sort((a, b) => a.number - b.number),
+    });
+  }
+
+  async function removeSemester(item) {
+    await api.deleteSemester(item.id);
+    invalidateSemester(item.id);
+    saveYear({ ...y, semesters: y.semesters.filter((semester) => semester.id !== item.id) });
+  }
+
+  async function addSemester() {
+    setError('');
+    try {
+      const semester = await api.createSemester(year.id);
+      saveYear({
+        ...y,
+        semesters: [...y.semesters, semester].sort((a, b) => a.number - b.number),
+      });
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
   return (
     <>
       <h1>Year {year.number}</h1>
       <p className="sub">Choose a semester.</p>
+      {error && <p className="error" role="alert">{error}</p>}
       <Grid onOpen={(it) => onOpen({ id: it.id, number: it.raw.number })}
+            onEdit={editSemester}
+            onDelete={removeSemester}
+            add={y && <AddTile label="Add semester" i={y.semesters.length} onClick={addSemester} />}
             items={y && y.semesters.map((s) => ({
-              id: s.id, name: `Semester ${s.number}`, raw: s,
+              id: s.id,
+              name: `Semester ${s.number}`,
+              editValue: String(s.number),
+              editLabel: `Semester ${s.number} number`,
+              removeMessage: `Remove Semester ${s.number} and permanently delete its units, uploaded PDFs, CATs, timetable, and exam data?`,
+              raw: s,
               meta: s.unit_count ? plural(s.unit_count, 'unit') : 'No units yet',
             }))} />
     </>
@@ -259,9 +417,17 @@ export function SemesterView({ sem, onOpen }) {
     setError('');
     try {
       const result = await api.uploadTimetable(sem.id, file);
-      const next = { ...semester, timetable_filename: result.timetable_filename, classes: result.classes };
+      const nextCourses = result.courses || semester.courses;
+      setUnits(nextCourses);
+      const next = {
+        ...semester,
+        courses: nextCourses,
+        timetable_filename: result.timetable_filename,
+        classes: result.classes,
+      };
       setSemester(next);
       semesterCache.set(sem.id, Promise.resolve(next));
+      invalidateYears();
     } catch (e) {
       setError(e.message);
     } finally {
@@ -305,6 +471,27 @@ export function SemesterView({ sem, onOpen }) {
     } finally {
       setGeneratingPlan(false);
     }
+  }
+
+  async function renameUnit(unit, name) {
+    const updated = await api.updateUnit(unit.id, name);
+    const nextUnits = units.map((item) =>
+      item.id === unit.id ? { ...item, name: updated.name } : item,
+    );
+    setUnits(nextUnits);
+    const nextSemester = { ...semester, courses: nextUnits };
+    setSemester(nextSemester);
+    semesterCache.set(sem.id, Promise.resolve(nextSemester));
+  }
+
+  async function removeUnit(unit) {
+    await api.deleteUnit(unit.id);
+    const nextUnits = units.filter((item) => item.id !== unit.id);
+    setUnits(nextUnits);
+    const nextSemester = { ...semester, courses: nextUnits };
+    setSemester(nextSemester);
+    semesterCache.set(sem.id, Promise.resolve(nextSemester));
+    invalidateYears();
   }
 
   const classDays = WEEKDAYS.map((name, weekday) => ({
@@ -447,8 +634,14 @@ export function SemesterView({ sem, onOpen }) {
         )}
       </section>
       <Grid onOpen={(it) => onOpen({ id: it.id, name: it.name })}
+            onEdit={renameUnit}
+            onDelete={removeUnit}
             items={units && units.map((c) => ({
-              id: c.id, name: c.name, meta: c.document_count ? plural(c.document_count, 'file') : 'No files yet',
+              id: c.id,
+              name: c.name,
+              editLabel: `unit ${c.name}`,
+              removeMessage: `Remove "${c.name}" and permanently delete its uploaded PDFs and CATs?`,
+              meta: c.document_count ? plural(c.document_count, 'file') : 'No files yet',
             }))}
             add={<NewUnit i={units ? units.length : 0}
                           onCreate={async (name) => {
