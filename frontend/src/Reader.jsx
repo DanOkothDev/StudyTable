@@ -4,6 +4,39 @@ import workerSrc from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { api } from "./api";
 import Panel from "./Panel";
 
+const styles = `
+.shell.wide { max-width: 1480px; height: 100vh; display: flex; flex-direction: column; overflow: hidden; padding-bottom: 20px; }
+.shell.wide .bar { padding-bottom: 16px; }
+.shell.wide .page { flex: 1; min-height: 0; }
+.reader { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 24px; height: 100%; min-height: 0; grid-template-rows: minmax(0, 1fr); }
+.stage { position: relative; display: flex; flex-direction: column; min-width: 0; }
+.stage-top { display: flex; align-items: center; gap: 16px; margin-bottom: 12px; min-width: 0; }
+.stage-top .back { margin: 0; }
+.stage-top .nm { color: var(--muted); font-size: .9rem; }
+.sheet { flex: 1; min-height: 0; overflow: auto; display: flex; justify-content: center; align-items: flex-start; padding-bottom: 84px; border-radius: 18px; scrollbar-width: thin; }
+.sheet canvas { background: #fff; border-radius: 6px; box-shadow: 0 20px 40px -24px rgba(19, 26, 46, .35); animation: fade .3s var(--ease); }
+@keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+.page-skel { width: min(100%, 640px); height: 80%; border-radius: 10px; }
+.pager { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); display: flex; align-items: center; gap: 6px; padding: 6px; background: var(--ink); color: #fff; border-radius: 999px; box-shadow: 0 14px 30px -12px rgba(19, 26, 46, .5); }
+.pager button { width: 36px; height: 36px; display: grid; place-items: center; border-radius: 50%; color: #fff; transition: background .2s; }
+.pager button:hover:not(:disabled) { background: rgba(255, 255, 255, .16); }
+.pager button:disabled { opacity: .3; cursor: default; }
+.pager input { width: 54px; padding: 6px 4px; text-align: center; background: rgba(255, 255, 255, .12); border: 0; border-radius: 10px; color: #fff; -moz-appearance: textfield; }
+.pager input::-webkit-inner-spin-button { appearance: none; }
+.pager span { font-size: .9rem; opacity: .75; padding-right: 6px; }
+.nudge { position: absolute; left: 14px; bottom: 18px; display: flex; align-items: center; gap: 10px; padding: 10px 10px 10px 18px; background: var(--mark); border-radius: 999px; font-weight: 500; font-size: .92rem; animation: pop .5s var(--ease); }
+@keyframes pop { from { opacity: 0; transform: translateY(16px) scale(.94); } to { opacity: 1; transform: none; } }
+.nudge button { padding: 6px 14px; border-radius: 999px; background: var(--ink); color: #fff; font-size: .88rem; }
+.nudge .x { padding: 4px 10px; background: transparent; color: var(--ink); font-size: 1.1rem; }
+.scan-note { margin: 0 0 10px; padding: 9px 14px; background: #fff3c4; border-radius: 12px; font-size: .88rem; animation: enter .4s var(--ease); }
+@media (max-width: 900px) {
+  .shell.wide { height: auto; overflow: visible; }
+  .reader { grid-template-columns: 1fr; height: auto; }
+  .sheet { height: 70vh; flex: none; }
+  .side { height: 70vh; }
+}
+`;
+
 pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
 const NUDGE_MINUTES = 8; // how often to offer a quick question
 
@@ -117,6 +150,8 @@ export default function Reader({ course, doc, onBack }) {
   }, []);
 
   return (
+    <>
+    <style>{styles}</style>
     <div className="reader">
       <section className="stage">
         <div className="stage-top">
@@ -229,5 +264,6 @@ export default function Reader({ course, doc, onBack }) {
         quizSignal={quizSignal}
       />
     </div>
+    </>
   );
 }

@@ -1,6 +1,22 @@
 import { useEffect, useState } from 'react';
 import { api } from './api';
 
+const styles = `
+.hint { color: var(--muted); font-size: .92rem; margin: 0; }
+.newcat { width: 100%; padding: 22px; border: 1.5px dashed #c5cbe0; border-radius: 22px; color: var(--muted); font-weight: 500; transition: border-color .2s, color .2s; }
+.newcat:hover:not(:disabled) { border-color: var(--blue); color: var(--blue); }
+.newcat:disabled { cursor: default; opacity: .7; }
+.creator { display: grid; gap: 16px; padding: 22px; background: #fff; border: 1px solid var(--line); border-radius: 24px; animation: enter .4s var(--ease); }
+.seg { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; padding: 4px; background: var(--paper); border-radius: 14px; }
+.seg button { padding: 9px; border-radius: 10px; color: var(--muted); font-weight: 500; transition: background .2s, color .2s; }
+.seg button[aria-checked="true"] { background: #fff; color: var(--ink); box-shadow: 0 1px 3px rgba(19, 26, 46, .12); }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.fchip { max-width: 100%; padding: 8px 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border-radius: 999px; border: 1.5px solid var(--line); color: var(--muted); font-size: .9rem; transition: all .2s; }
+.fchip.on { background: var(--mark); border-color: var(--mark); color: var(--ink); }
+.creator-go { display: flex; justify-content: flex-end; align-items: center; gap: 10px; }
+.primary.go { padding: 12px 26px; }
+`;
+
 export default function Cats({ course, docs, onOpen }) {
   const [cats, setCats] = useState(null);
   const [creating, setCreating] = useState(false);
@@ -41,6 +57,7 @@ export default function Cats({ course, docs, onOpen }) {
 
   return (
     <>
+      <style>{styles}</style>
       {error && <p className="error" role="alert">{error}</p>}
       {creating ? (
         <form className="creator" onSubmit={create}>

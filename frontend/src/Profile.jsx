@@ -2,6 +2,32 @@ import { useEffect, useState } from "react";
 import { api } from "./api";
 import FormattedText from "./FormattedText";
 
+const styles = `
+.profile-form, .daily-insight { max-width: 760px; padding: 24px; border: 1px solid var(--line); border-radius: 22px; background: #fff; }
+.profile-form { display: grid; gap: 16px; margin-bottom: 22px; }
+.profile-email { margin: 0; color: var(--muted); font-size: .92rem; }
+.profile-form input { width: 100%; }
+.profile-actions { display: flex; align-items: center; gap: 16px; }
+.profile-logout { padding: 10px 14px; color: var(--muted); border-radius: 12px; }
+.profile-logout:hover { color: var(--err); background: rgba(198, 47, 62, .07); }
+.daily-insight-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+.daily-insight h2 { margin: 0; font-size: 1.25rem; }
+.daily-insight-head p, .insight-hint { margin: 4px 0 0; color: var(--muted); font-size: .92rem; }
+.insight-date { margin: 22px 0 10px; color: var(--muted); font-size: .9rem; font-weight: 600; }
+.insight-provider { margin: 0 0 10px; color: var(--muted); font-size: .86rem; }
+.insight-content { color: #303954; }
+.daily-insight h3 { margin: 22px 0 8px; font-size: 1rem; }
+.insight-sources { margin: 0; padding-left: 20px; color: var(--muted); }
+.insight-sources li { margin: 6px 0; }
+.insight-sources a { color: var(--blue); overflow-wrap: anywhere; }
+.insight-sources a:hover { text-decoration: underline; }
+@media (max-width: 560px) {
+  .profile-form, .daily-insight { padding: 20px; }
+  .daily-insight-head { flex-direction: column; }
+  .profile-actions { flex-wrap: wrap; }
+}
+`;
+
 const emptyProfile = {
   school: "",
   program: "",
@@ -87,6 +113,7 @@ export default function Profile({ email, onBack, onLogout }) {
 
   return (
     <>
+      <style>{styles}</style>
       <button className="back" onClick={onBack}>Back home</button>
       <h1>Your profile</h1>
       <p className="sub">Personalize your study support and daily course insights.</p>

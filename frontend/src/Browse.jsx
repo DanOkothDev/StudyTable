@@ -3,6 +3,75 @@ import { api } from './api';
 import FormattedText from './FormattedText';
 
 const TINTS = ['#FFD3BF', '#CFDCFF', '#CDEFD9', '#F9D5E8', '#FFEBA3', '#DCD2FA'];
+const gridStyles = `
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 34px 22px; }
+.folder { position: relative; margin-top: 18px; min-height: 132px; padding: 20px 22px; display: flex; flex-direction: column; justify-content: flex-end; gap: 2px; text-align: left; background: #fff; border: 1px solid var(--line); border-radius: 6px 22px 22px 22px; animation: enter .5s var(--ease) both; animation-delay: calc(var(--i, 0) * 60ms); transition: transform .3s var(--ease), box-shadow .3s var(--ease); }
+.folder::before { content: ""; position: absolute; left: -1px; top: -18px; width: 84px; height: 19px; background: var(--tint, var(--line)); border-radius: 10px 10px 0 0; transition: width .3s var(--ease); }
+.folder strong { font-size: 1.15rem; font-weight: 600; letter-spacing: -.01em; overflow-wrap: anywhere; }
+.folder span { color: var(--muted); font-size: .9rem; }
+button.folder:hover { transform: translateY(-5px); box-shadow: 0 18px 32px -16px rgba(19, 26, 46, .3); }
+button.folder:hover::before { width: 112px; }
+button.folder:active { transform: scale(.98); }
+.folder.new { border: 1.5px dashed #c5cbe0; background: transparent; justify-content: center; align-items: center; }
+.folder.new::before { display: none; }
+.folder.new strong { color: var(--muted); font-weight: 500; }
+button.folder.new:hover { border-color: var(--blue); }
+button.folder.new:hover strong { color: var(--blue); }
+.folder.new.open { align-items: stretch; background: #fff; border-style: solid; border-color: var(--blue); gap: 8px; }
+.folder.new.open .chips { margin-top: 6px; }
+`;
+const yearsStyles = `
+.tomorrow { margin: 0 0 34px; padding: 22px 24px; border: 1px solid var(--line); border-radius: 20px; background: #fff; }
+.tomorrow h2 { margin: 0 0 8px; font-size: 1.18rem; font-weight: 600; }
+.tomorrow > p { margin: 0; color: var(--muted); }
+.assessment-alert { width: 100%; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 16px; padding: 13px 0; text-align: left; border-top: 1px solid var(--line); }
+.assessment-alert strong { font-weight: 600; }
+.assessment-alert span { color: var(--muted); font-size: .92rem; }
+.assessment-alert:hover strong { color: var(--blue); }
+`;
+const semesterStyles = `
+.timetable { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin: 0 0 22px; padding: 18px 22px; border: 1px solid var(--line); border-radius: 18px; background: #fff; }
+.timetable h2 { margin: 0 0 2px; font-size: 1.18rem; font-weight: 600; }
+.timetable p { margin: 0; color: var(--muted); font-size: .92rem; overflow-wrap: anywhere; }
+.timetable-upload { position: relative; flex: none; padding: 10px 16px; border-radius: 999px; background: var(--ink); color: #fff; cursor: pointer; font-size: .9rem; font-weight: 600; }
+.timetable-upload:hover { background: var(--blue); }
+.timetable-upload input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.class-schedule { margin: 0 0 28px; padding: 18px 22px; border: 1px solid var(--line); border-radius: 18px; background: #fff; }
+.class-schedule > h2, .exam-panel h2 { margin: 0; font-size: 1.18rem; font-weight: 600; }
+.class-day { display: grid; grid-template-columns: 126px minmax(0, 1fr); gap: 18px; padding: 13px 0; border-top: 1px solid var(--line); }
+.class-day:first-of-type { margin-top: 12px; }
+.class-day h3 { margin: 0; font-size: .94rem; font-weight: 600; }
+.class-day-sessions { display: grid; gap: 7px; }
+.class-session { display: grid; grid-template-columns: 128px minmax(130px, 1fr) minmax(100px, 1fr); align-items: baseline; gap: 14px; }
+.class-session time, .class-session span { color: var(--muted); font-size: .9rem; }
+.assessment-empty { margin: 0 0 28px; color: var(--muted); font-size: .92rem; }
+.exam-panel { margin: 0 0 30px; padding: 22px 24px; border: 1px solid var(--line); border-radius: 20px; background: #fff; }
+.exam-panel-head { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+.exam-panel-head p { margin: 5px 0 0; color: var(--muted); font-size: .92rem; overflow-wrap: anywhere; }
+.exam-list { list-style: none; margin: 18px 0 0; padding: 0; border-top: 1px solid var(--line); }
+.exam-list li { display: grid; grid-template-columns: 190px minmax(0, 1fr) 80px; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.exam-list time, .exam-list li span { color: var(--muted); font-size: .9rem; }
+.exam-list strong { font-weight: 600; }
+.understanding { display: grid; gap: 16px; margin-top: 22px; }
+.understanding h3, .study-plan h3 { margin: 0 0 4px; font-size: 1rem; font-weight: 600; }
+.understanding p { margin: 0; color: var(--muted); font-size: .9rem; }
+.understanding-list { display: grid; gap: 8px; }
+.understanding-row { display: grid; grid-template-columns: minmax(140px, 1fr) minmax(240px, 1.2fr); align-items: center; gap: 16px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.understanding-row .pill { justify-self: stretch; min-width: 0; }
+.study-plan { margin-top: 22px; padding: 18px 20px; border-radius: 16px; background: var(--paper); }
+.study-plan .formatted-text { color: #303954; }
+.study-plan .recap-source { margin: 10px 0 14px; }
+@media (max-width: 560px) {
+  .timetable { align-items: flex-start; flex-direction: column; }
+  .exam-panel-head { align-items: flex-start; flex-direction: column; }
+  .exam-list li { grid-template-columns: 1fr auto; }
+  .exam-list strong { grid-column: 1 / -1; grid-row: 2; }
+  .understanding-row { grid-template-columns: 1fr; gap: 7px; }
+  .class-day { grid-template-columns: 1fr; gap: 8px; }
+  .class-session { grid-template-columns: 1fr 1fr; gap: 2px 12px; }
+  .class-session span { grid-column: 2; }
+}
+`;
 const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
 const WEEKDAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 const yearsCache = { promise: null, data: null };
@@ -37,7 +106,9 @@ export function invalidateSemester(id) {
 
 function Grid({ items, onOpen, add }) {
   return (
-    <div className="grid">
+    <>
+      <style>{gridStyles}</style>
+      <div className="grid">
       {items === null && [0, 1, 2].map((i) => <div className="folder skeleton" key={i} />)}
       {items && items.map((it, i) => (
         <button className="folder" key={it.id} onClick={() => onOpen(it)}
@@ -47,7 +118,8 @@ function Grid({ items, onOpen, add }) {
         </button>
       ))}
       {items && add}
-    </div>
+      </div>
+    </>
   );
 }
 
@@ -100,6 +172,7 @@ export function Years({ onOpen }) {
 
   return (
     <>
+      <style>{yearsStyles}</style>
       <h1>{hello}</h1>
       <p className="sub">{years && years.length === 0 ? 'Start by adding the year you are in.' : 'Pick a year to keep studying.'}</p>
       {error && <p className="error" role="alert">{error}</p>}
@@ -243,6 +316,7 @@ export function SemesterView({ sem, onOpen }) {
 
   return (
     <>
+      <style>{semesterStyles}</style>
       <h1>Semester {sem.number}</h1>
       <p className="sub">{units && units.length === 0 ? 'Add a unit, then drop your PDFs in.' : 'Pick a unit to keep studying.'}</p>
       <section className="timetable">

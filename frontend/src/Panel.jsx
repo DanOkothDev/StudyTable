@@ -2,6 +2,37 @@ import { useEffect, useRef, useState } from "react";
 import { api } from "./api";
 import FormattedText from "./FormattedText";
 
+const styles = `
+.side { display: flex; flex-direction: column; min-height: 0; background: #fff; border: 1px solid var(--line); border-radius: 24px; overflow: hidden; }
+.tabs { display: flex; gap: 4px; padding: 8px; margin: 12px 12px 0; background: var(--paper); border-radius: 14px; }
+.tabs button { flex: 1; padding: 8px; border-radius: 10px; color: var(--muted); font-weight: 500; transition: background .25s, color .25s; }
+.tabs button[aria-selected="true"] { background: #fff; color: var(--ink); box-shadow: 0 1px 3px rgba(19, 26, 46, .12); }
+.chat, .deck { flex: 1; overflow: auto; padding: 18px; display: flex; flex-direction: column; gap: 16px; min-height: 0; }
+.hint { color: var(--muted); font-size: .92rem; margin: 0; }
+.msg { display: grid; gap: 8px; animation: enter .35s var(--ease); }
+.msg .q { margin: 0; font-weight: 600; }
+.msg .a { margin: 0; padding: 12px 14px; background: var(--paper); border-radius: 4px 16px 16px 16px; }
+.msg .a.error { background: #fdecee; }
+.skeleton.line { height: 46px; border-radius: 4px 16px 16px 16px; }
+.composer { display: flex; gap: 8px; padding: 12px; border-top: 1px solid var(--line); }
+.composer input { flex: 1; min-width: 0; }
+.chip { align-self: flex-start; padding: 9px 14px; border-radius: 999px; background: var(--paper); font-size: .9rem; font-weight: 500; white-space: nowrap; transition: background .2s; }
+.chip:hover:not(:disabled) { background: var(--mark); }
+.chip:disabled { opacity: .5; }
+.send { flex: none; width: 46px; display: grid; place-items: center; border-radius: 14px; background: var(--ink); color: #fff; transition: background .2s, color .2s, opacity .2s; }
+.send:hover:not(:disabled) { background: var(--mark); color: var(--ink); }
+.send:disabled { opacity: .3; cursor: default; }
+.qcard { display: flex; flex-direction: column; gap: 14px; padding: 24px; min-height: 180px; justify-content: center; text-align: left; background: var(--paper); border-radius: 20px; animation: pop .45s var(--ease); }
+.qt { font-size: 1.15rem; font-weight: 600; line-height: 1.35; }
+.at { padding-top: 14px; border-top: 1.5px solid var(--line); animation: enter .35s var(--ease); }
+.tap { color: var(--muted); font-size: .88rem; }
+.rate { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; animation: enter .3s var(--ease); }
+.rate button { padding: 12px; border-radius: 14px; background: var(--paper); font-weight: 600; transition: background .2s; }
+.rate button:hover { background: #e9ecf6; }
+.rate .good { background: var(--mark); }
+.rate .good:hover { background: #ffd633; }
+`;
+
 export default function Panel({ course, doc, page, flush, quizSignal }) {
   const [tab, setTab] = useState("ask");
   const [chat, setChat] = useState([]); // {q, a, page, quiz?, error?}
@@ -53,6 +84,7 @@ export default function Panel({ course, doc, page, flush, quizSignal }) {
 
   return (
     <aside className="side">
+      <style>{styles}</style>
       <div className="tabs" role="tablist">
         <button
           role="tab"
