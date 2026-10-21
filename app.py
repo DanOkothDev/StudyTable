@@ -281,6 +281,9 @@ class Semester(db.Model):
     timetable_stored_name = db.Column(db.String(255), nullable=True)
     exam_timetable_filename = db.Column(db.String(255), nullable=True)
     exam_timetable_stored_name = db.Column(db.String(255), nullable=True)
+    exam_study_plan = db.Column(db.Text, nullable=True)
+    exam_study_plan_source = db.Column(db.String(40), nullable=True)
+    exam_study_plan_understanding = db.Column(db.Text, nullable=True)
     assessments = db.relationship("Assessment", backref="semester", cascade="all, delete-orphan",
                                   order_by="Assessment.date")
     classes = db.relationship("ClassSession", backref="semester", cascade="all, delete-orphan",
@@ -784,7 +787,12 @@ def get_semester(semester_id):
                    timetable_filename=sem.timetable_filename,
                    classes=[class_session_json(session) for session in sem.classes],
                    exam_timetable_filename=sem.exam_timetable_filename,
-                   assessments=[assessment_json(assessment) for assessment in sem.assessments])
+                   assessments=[assessment_json(assessment) for assessment in sem.assessments],
+                   exam_study_plan=sem.exam_study_plan,
+                   exam_study_plan_source=sem.exam_study_plan_source,
+                   exam_study_plan_understanding=(
+                       json.loads(sem.exam_study_plan_understanding)
+                       if sem.exam_study_plan_understanding else {}))
 
 
 @app.patch("/api/semesters/<int:semester_id>")
@@ -1003,6 +1011,9 @@ def upload_exam_timetable(semester_id):
         sem.assessments = assessments
         sem.exam_timetable_filename = file.filename[:255]
         sem.exam_timetable_stored_name = stored_name
+        sem.exam_study_plan = None
+        sem.exam_study_plan_source = None
+        sem.exam_study_plan_understanding = None
         record_ai_call()
         db.session.commit()
     except Exception:
@@ -1072,9 +1083,14 @@ def generate_exam_study_plan(semester_id):
         plan = ai.generate_exam_study_plan(exams, units)
     except ai.AIError as e:
         return ai_failure(e)
+    source = "course_documents" if has_material else "general_knowledge"
+    sem.exam_study_plan = plan
+    sem.exam_study_plan_source = source
+    sem.exam_study_plan_understanding = json.dumps(
+        {str(course_id): level for course_id, level in levels.items()})
     record_ai_call()
     db.session.commit()
-    return jsonify(plan=plan, source="course_documents" if has_material else "general_knowledge")
+    return jsonify(plan=plan, source=source, understanding=levels)
 
 
 @app.get("/api/classes")

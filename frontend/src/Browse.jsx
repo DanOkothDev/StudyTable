@@ -73,9 +73,12 @@ const semesterStyles = `
 .study-plan { margin-top: 22px; padding: 18px 20px; border-radius: 16px; background: var(--paper); }
 .study-plan .formatted-text { color: #303954; }
 .study-plan .recap-source { margin: 10px 0 14px; }
+.study-plan-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.study-plan-head h3 { margin: 0; }
 @media (max-width: 560px) {
   .timetable { align-items: flex-start; flex-direction: column; }
   .exam-panel-head { align-items: flex-start; flex-direction: column; }
+  .study-plan-head { align-items: flex-start; flex-direction: column; }
   .exam-list li { grid-template-columns: 1fr auto; }
   .exam-list strong { grid-column: 1 / -1; grid-row: 2; }
   .understanding-row { grid-template-columns: 1fr; gap: 7px; }
@@ -86,6 +89,9 @@ const semesterStyles = `
 `;
 const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
 const WEEKDAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({
+  '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+}[char]));
 const yearsCache = { promise: null, data: null };
 const semesterCache = new Map();
 
@@ -409,6 +415,9 @@ export function SemesterView({ sem, onOpen }) {
     loadSemester(sem.id).then((s) => {
       setUnits(s.courses);
       setSemester(s);
+      setUnderstanding(s.exam_study_plan_understanding || {});
+      setStudyPlan(s.exam_study_plan || '');
+      setStudyPlanSource(s.exam_study_plan_source || '');
     }).catch((e) => setError(e.message));
   }, [sem.id]);
 
@@ -447,6 +456,9 @@ export function SemesterView({ sem, onOpen }) {
         ...semester,
         exam_timetable_filename: result.exam_timetable_filename,
         assessments: result.assessments,
+        exam_study_plan: null,
+        exam_study_plan_source: null,
+        exam_study_plan_understanding: {},
       };
       setSemester(next);
       semesterCache.set(sem.id, Promise.resolve(next));
@@ -466,11 +478,66 @@ export function SemesterView({ sem, onOpen }) {
       const result = await api.examStudyPlan(sem.id, understanding);
       setStudyPlan(result.plan);
       setStudyPlanSource(result.source);
+      const next = {
+        ...semester,
+        exam_study_plan: result.plan,
+        exam_study_plan_source: result.source,
+        exam_study_plan_understanding: result.understanding,
+      };
+      setSemester(next);
+      semesterCache.set(sem.id, Promise.resolve(next));
     } catch (e) {
       setError(e.message);
     } finally {
       setGeneratingPlan(false);
     }
+  }
+
+  function downloadStudyPlan() {
+    const examsHtml = assessments.map((item) => (
+      `<li><strong>${escapeHtml(item.course_name)} — ${escapeHtml(item.title)}</strong> — ` +
+      `${escapeHtml(item.date)}${item.start_time ? ` at ${escapeHtml(item.start_time)}` : ''}</li>`
+    )).join('');
+    const levelsHtml = units.map((unit) => {
+      const level = understanding[unit.id];
+      return `<li>${escapeHtml(unit.name)}: ${level ? `${level}/5` : 'not rated'}</li>`;
+    }).join('');
+    const source = studyPlanSource === 'course_documents'
+      ? 'Uses readable lecturer PDFs where available; general knowledge fills any gaps.'
+      : 'No readable lecturer PDFs were found; this plan uses general knowledge.';
+    const html = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Semester ${sem.number} exam study plan</title>
+  <style>
+    body { max-width: 850px; margin: 40px auto; padding: 0 24px; color: #20283d; font: 16px/1.65 system-ui, sans-serif; }
+    h1, h2 { line-height: 1.25; }
+    li { margin: 5px 0; }
+    pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: 20px; border-radius: 12px; background: #f4f5f8; font: inherit; }
+    @media print { body { margin: 0 auto; } }
+  </style>
+</head>
+<body>
+  <h1>Semester ${sem.number} exam study plan</h1>
+  <p>Year ${escapeHtml(semester?.year?.number ?? '')} · Exported ${escapeHtml(new Date().toLocaleDateString())}</p>
+  <h2>Exams</h2>
+  <ul>${examsHtml}</ul>
+  <h2>Understanding levels</h2>
+  <ul>${levelsHtml}</ul>
+  <h2>Revision plan</h2>
+  <p>${escapeHtml(source)}</p>
+  <pre>${escapeHtml(studyPlan)}</pre>
+</body>
+</html>`;
+    const file = new Blob([html], { type: 'text/html;charset=utf-8' });
+    const url = URL.createObjectURL(file);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `semester-${sem.number}-exam-study-plan.html`;
+    link.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
   async function renameUnit(unit, name) {
@@ -623,7 +690,12 @@ export function SemesterView({ sem, onOpen }) {
         )}
         {studyPlan && (
           <article className="study-plan">
-            <h3>Your exam-period revision plan</h3>
+            <div className="study-plan-head">
+              <h3>Your exam-period revision plan</h3>
+              <button type="button" className="timetable-upload" onClick={downloadStudyPlan}>
+                Download offline plan
+              </button>
+            </div>
             <p className="recap-source">
               {studyPlanSource === 'course_documents'
                 ? 'Uses readable lecturer PDFs where available; general knowledge fills any gaps.'

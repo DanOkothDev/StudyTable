@@ -48,6 +48,11 @@ The app uses Google Gemini for these functions:
 - See tomorrow's classes on the home page.
 - Open a pre-class recap based on readable course PDFs, or on general knowledge when no readable course material is available.
 
+### 7. Exam planning
+- Upload a text-based PDF exam timetable and rate understanding for each unit to generate a personalized revision plan.
+- Generated plans and their understanding ratings are saved with the semester and remain available after refreshing.
+- Download the plan as a standalone HTML file to read offline.
+
 ## App architecture
 
 ### Backend
