@@ -52,6 +52,7 @@ export const api = {
   deleteCat: (id) => req(`/cats/${id}`, { method: "DELETE" }),
   years: () => req("/years"),
   createYear: (number) => req("/years", send("POST", number ? { number } : {})),
+  deleteYear: (id) => req(`/years/${id}`, { method: "DELETE" }),
   createSemester: (yearId) =>
     req(`/years/${yearId}/semesters`, send("POST", {})),
   semester: (id) => req(`/semesters/${id}`),

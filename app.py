@@ -22,7 +22,8 @@ from pypdfium2 import raw as pdfium_raw
 from sqlalchemy import func
 from werkzeug.security import check_password_hash, generate_password_hash
 
-load_dotenv()
+_HERE = Path(__file__).resolve().parent
+load_dotenv(_HERE / ".env")
 
 import ai  # noqa: E402  (after load_dotenv so GEMINI_MODEL is read from .env)
 
@@ -456,11 +457,14 @@ def new_year(number):
 
 
 def adopt_orphans():
-    """Units made before years existed (no semester yet) are filed under Year 2, Semester 1."""
+    """Units made before years existed (no semester yet) are filed under the user's lowest year, Semester 1."""
     orphans = Course.query.filter_by(user_id=current_user.id, semester_id=None).all()
     if not orphans:
         return
-    year = Year.query.filter_by(user_id=current_user.id, number=2).first() or new_year(2)
+    year = (Year.query.filter_by(user_id=current_user.id)
+            .order_by(Year.number).first())
+    if year is None:
+        year = new_year(1)
     sem = next(s for s in year.semesters if s.number == 1)
     for c in orphans:
         c.semester = sem
@@ -764,6 +768,28 @@ def create_year():
     year = new_year(number)
     db.session.commit()
     return jsonify(year_json(year)), 201
+
+
+@app.delete("/api/years/<int:year_id>")
+@login_required
+def delete_year(year_id):
+    year = Year.query.filter_by(id=year_id, user_id=current_user.id).first_or_404()
+    stored_names = [
+        doc.stored_name
+        for sem in year.semesters
+        for course in sem.courses
+        for doc in course.documents
+    ]
+    for sem in year.semesters:
+        if sem.timetable_stored_name:
+            stored_names.append(sem.timetable_stored_name)
+        if sem.exam_timetable_stored_name:
+            stored_names.append(sem.exam_timetable_stored_name)
+    db.session.delete(year)
+    db.session.commit()
+    for stored_name in stored_names:
+        (UPLOAD_DIR / stored_name).unlink(missing_ok=True)
+    return jsonify(ok=True)
 
 
 @app.post("/api/years/<int:year_id>/semesters")

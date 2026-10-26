@@ -8,7 +8,8 @@ load_dotenv()
 request = Request(
     "https://api.groq.com/openai/v1/models",
     headers={
-        "Authorization": "Bearer " + os.getenv("GROQ_API_KEY")
+        "Authorization": "Bearer " + os.getenv("GROQ_API_KEY"),
+        "User-Agent": "StudyTable/1.0",
     },
 )
 
